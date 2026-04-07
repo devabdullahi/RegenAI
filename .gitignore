@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Environment / Secrets
+.env
+.env.local
+.env*.local
+*.env
+backend/.env
+
+# Build
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Misc
+*.log
+
+# Supabase local
+.supabase/
+
+# Project-specific docs (internal only)
+CATCHING_UP.txt
+PLAN.md
+CSP_NAVIGATOR_SPEC.json
+regenai_agent_execution_brief.md
+
+# Claude / AI files
+.claude/
+claude_output/
+**/CLAUDE.md
+**/AGENTS.md
+
+# Poetry lock (optional — remove this line if you want lock file tracked)
+# poetry.lock
+# Supabase temp
+supabase/.temp/
+supabase/.branches/
