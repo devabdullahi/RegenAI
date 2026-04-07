@@ -5,7 +5,7 @@ Coverage targets:
   - All four eligibility statuses: act_now, eligible, pending_review, not_eligible
   - The 2-concern minimum requirement gate
   - Gap-closure enhancement recommendations (populated when concerns are unmet)
-  - Persistence to csp_assessments (upsert called once; failure is non-fatal)
+  - Persistence to csp_eligibility_assessments (upsert called once; failure is non-fatal)
   - Return payload keys match CSPEligibilityResponse schema
 """
 
@@ -327,11 +327,6 @@ class TestPersistence:
         ):
             await evaluate_csp_eligibility(FARM_ID, supabase)
 
-        # BUG: csp_eligibility.py upserts to "csp_eligibility_assessments" but the
-        # router, payment service, and all documentation refer to "csp_assessments".
-        # This name mismatch means the payment service cannot read the assessment that
-        # eligibility just wrote, breaking the cached-read optimisation.
-        # The actual call is to "csp_eligibility_assessments":
         supabase.table.assert_any_call("csp_eligibility_assessments")
 
     async def test_upsert_failure_does_not_raise(self):

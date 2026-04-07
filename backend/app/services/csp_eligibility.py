@@ -11,7 +11,7 @@ Program by checking the two statutory eligibility requirements:
 
 All scoring logic is delegated to csp_scoring.calculate_stewardship_score().
 This module adds the eligibility gate layer and assembles the final
-CSPEligibilityResponse payload, persisting it to the csp_assessments table
+CSPEligibilityResponse payload, persisting it to the csp_eligibility_assessments table
 for cached reads by the router.
 
 Key program facts (FY2024):
@@ -63,7 +63,7 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
                - pending_review: 1 concern met (close to eligible)
                - not_eligible:  0 concerns meeting threshold
         4. Identify recommended enhancements to close any gap.
-        5. Persist the assessment to csp_assessments table.
+        5. Persist the assessment to csp_eligibility_assessments table.
         6. Return the full eligibility response dict.
 
     Args:
@@ -151,7 +151,7 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
                 break
 
     # ------------------------------------------------------------------
-    # 5. Persist assessment to csp_assessments table
+    # 5. Persist assessment to csp_eligibility_assessments table
     # ------------------------------------------------------------------
     now = datetime.now(tz=timezone.utc).isoformat()
     assessment_payload = {

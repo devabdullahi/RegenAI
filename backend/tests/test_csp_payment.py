@@ -232,12 +232,7 @@ class TestApplyPaymentCaps:
 class TestEstimateCspPayments:
 
     def _base_supabase(self, farm_row, field_rows, concerns_meeting=2):
-        """Build a supabase mock with assessment data for the given concern count.
-
-        NOTE: The payment service reads from "csp_eligibility_assessments" (not
-        "csp_assessments"), so the mock key must match that name.  This is itself
-        a symptom of Bug #1: inconsistent table naming across services.
-        """
+        """Build a supabase mock with assessment data for the given concern count."""
         assessment = {"concerns_meeting_threshold": concerns_meeting, "cart_score": 40.0}
         return make_supabase_mock(
             {
@@ -365,7 +360,7 @@ class TestGetRecommendedEnhancements:
         supabase = make_supabase_mock(
             {
                 "farms": {"data": farm_row},
-                "csp_assessments": {"data": None},
+                "csp_eligibility_assessments": {"data": None},
                 "csp_enhancement_activities": {"data": []},
             }
         )
@@ -376,7 +371,7 @@ class TestGetRecommendedEnhancements:
         supabase = make_supabase_mock(
             {
                 "farms": {"data": farm_row},
-                "csp_assessments": {"data": None},
+                "csp_eligibility_assessments": {"data": None},
                 "csp_enhancement_activities": {"data": []},
             }
         )
@@ -394,7 +389,7 @@ class TestGetRecommendedEnhancements:
         supabase = make_supabase_mock(
             {
                 "farms": {"data": farm_row},
-                "csp_assessments": {"data": None},
+                "csp_eligibility_assessments": {"data": None},
                 "csp_enhancement_activities": {"data": []},
             }
         )
@@ -413,10 +408,10 @@ class TestGetRecommendedEnhancements:
         large_farm = {"id": FARM_ID, "state": "IA", "total_acres": 500.0}
 
         small_sb = make_supabase_mock(
-            {"farms": {"data": small_farm}, "csp_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
+            {"farms": {"data": small_farm}, "csp_eligibility_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
         )
         large_sb = make_supabase_mock(
-            {"farms": {"data": large_farm}, "csp_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
+            {"farms": {"data": large_farm}, "csp_eligibility_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
         )
 
         small_result = await get_recommended_enhancements(FARM_ID, small_sb)

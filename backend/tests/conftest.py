@@ -118,7 +118,7 @@ def standard_supabase(farm_row, field_rows, soil_rows):
             "fields": {"data": field_rows},
             "soil_profiles": {"data": soil_rows},
             "recommendations": {"data": RECOMMENDATION_ROWS},
-            "csp_assessments": {"data": None},
+            "csp_eligibility_assessments": {"data": None},
             "csp_enhancement_activities": {"data": []},
         }
     )

@@ -320,11 +320,11 @@ async def run_full_csp_evaluation(
     """Run a complete CSP evaluation: eligibility + score + payments.
 
     Executes the full evaluation pipeline in sequence:
-        1. CART stewardship scoring (updates csp_assessments table)
+        1. CART stewardship scoring (updates csp_eligibility_assessments table)
         2. Eligibility determination (uses score result)
         3. Payment estimation (uses eligibility result)
 
-    Results are persisted to the csp_assessments table and returned
+    Results are persisted to the csp_eligibility_assessments table and returned
     immediately. This endpoint is idempotent — repeated calls overwrite
     previous results with the latest data.
 
