@@ -56,3 +56,6 @@ claude_output/
 # Supabase temp
 supabase/.temp/
 supabase/.branches/
+
+# PM Task Files
+PM_*_TASKS.md

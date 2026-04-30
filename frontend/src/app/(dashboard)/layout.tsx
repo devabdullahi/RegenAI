@@ -1,7 +1,13 @@
+"use client" // This directive applies only to OfflineBanner below; the layout itself is async server
+
+// NOTE: The layout export below is an async server component.
+// OfflineBanner is split out as its own client component.
+
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardNav } from "@/components/shared/dashboard-nav";
+import { OfflineBanner } from "@/components/shared/offline-banner";
 
 // DashboardNav uses useSearchParams() so it must be wrapped in Suspense
 // to allow static prerendering of dashboard pages per Next.js requirements.
@@ -22,7 +28,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const devBypass = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true";
+  const devBypass = process.env.DEV_AUTH_BYPASS === "true";
   let userEmail = "dev@farm.com";
 
   if (!devBypass) {
@@ -42,7 +48,7 @@ export default async function DashboardLayout({
       <Suspense fallback={<NavFallback />}>
         <DashboardNav userEmail={userEmail} />
       </Suspense>
-      <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main id="main-content" className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-5xl">{children}</div>
       </main>
     </div>

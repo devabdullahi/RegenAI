@@ -11,21 +11,26 @@ RUN apt-get update && apt-get install -y \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry
-RUN pip install poetry
+# Install Poetry (pinned to avoid silent breakage from upstream changes)
+RUN pip install "poetry==1.8.3"
 
 # Copy dependency files
-COPY pyproject.toml poetry.lock* ./
+COPY pyproject.toml poetry.lock ./
 
-# Install dependencies (no dev deps in production)
+# Install production dependencies only
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-dev --no-interaction --no-ansi
+    && poetry install --only main --no-interaction --no-ansi
+
+# Run as a non-root user to reduce the container's attack surface
+RUN addgroup --system app && adduser --system --ingroup app app
 
 # Copy application code
 COPY . .
 
 # Expose port
 EXPOSE 8000
+
+USER app
 
 # Run with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

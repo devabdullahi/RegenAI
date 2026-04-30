@@ -21,9 +21,11 @@ import re
 from datetime import date, timezone, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_authenticated_client, get_current_user
+from app.main import limiter
 from app.services.csp_eligibility import evaluate_csp_eligibility
 from app.services.csp_payment import estimate_csp_payments, get_recommended_enhancements
 from app.services.csp_scoring import calculate_stewardship_score
@@ -104,18 +106,8 @@ async def _assert_farm_access(farm_id: UUID, supabase) -> None:
     non-existence or an access denial.
     """
     try:
-        result = (
-            supabase.table("farms")
-            .select("id")
-            .eq("id", str(farm_id))
-            .single()
-            .execute()
-        )
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Farm not found")
-    except HTTPException:
-        raise
-    except Exception:
+        supabase.table("farms").select("id").eq("id", str(farm_id)).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Farm not found")
 
 
@@ -312,7 +304,9 @@ async def get_csp_enhancements(
 # ---------------------------------------------------------------------------
 
 @router.post("/evaluate")
+@limiter.limit("20/hour")
 async def run_full_csp_evaluation(
+    request: Request,
     farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),

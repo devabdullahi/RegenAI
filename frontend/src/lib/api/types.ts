@@ -86,8 +86,8 @@ export interface Document {
 export type CSPEligibilityStatus =
   | "eligible"
   | "not_eligible"
-  | "conditional"
-  | "not_evaluated";
+  | "act_now"
+  | "pending_review";
 
 export type CSPDeadlineSeverity = "urgent" | "warning" | "upcoming" | "passed";
 
@@ -229,9 +229,12 @@ export type ActivityType =
   | "spray"
   | "fertilize"
   | "scout"
-  | "harvest";
+  | "harvest"
+  | "tillage"
+  | "cover_crop"
+  | "other";
 
-export type ScoutingSeverity = "none" | "low" | "medium" | "high" | "critical";
+export type ScoutingSeverity = "none" | "low" | "moderate" | "high" | "critical";
 
 export interface PlantingDetails {
   variety: string;

@@ -41,6 +41,7 @@ function ScoreBreakdownRow({
             className={`h-2 w-2 shrink-0 rounded-full ${currentlyMet ? "bg-green-500" : "bg-muted-foreground/40"}`}
             aria-hidden="true"
           />
+          <span className="sr-only">{currentlyMet ? "Met" : "Not met"}</span>
           <span className="text-sm text-foreground truncate">{label}</span>
         </div>
         <span className="shrink-0 text-xs font-medium text-muted-foreground">
@@ -106,58 +107,53 @@ export function CSPScoreGauge({
         </div>
         <div className="mb-1 space-y-0.5">
           <span
-            className={`inline-block rounded-full px-2.5 py-0.5 text-sm font-semibold ${scoreLabelColor(score_label)} bg-current/10`}
-            style={{ backgroundColor: undefined }}
+            className={`inline-flex rounded-full px-2.5 py-0.5 text-sm font-semibold ${
+              score_label === "Excellent"
+                ? "bg-green-100 text-green-700"
+                : score_label === "Good"
+                  ? "bg-primary/10 text-primary"
+                  : score_label === "Fair"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-red-100 text-red-700"
+            }`}
           >
-            <span
-              className={`${
-                score_label === "Excellent"
-                  ? "bg-green-100 text-green-700"
-                  : score_label === "Good"
-                    ? "bg-primary/10 text-primary"
-                    : score_label === "Fair"
-                      ? "bg-amber-100 text-amber-700"
-                      : "bg-red-100 text-red-700"
-              } inline-flex rounded-full px-2.5 py-0.5 text-sm font-semibold`}
-            >
-              {score_label}
-            </span>
+            {score_label}
           </span>
-          <p className="text-xs text-muted-foreground capitalize">
+          <p className="text-base font-semibold text-foreground capitalize">
             {percentile_estimate} for Iowa
           </p>
         </div>
       </div>
 
-      {/* Main progress bar */}
+      {/* Main progress bar with threshold marker */}
       <div className="space-y-1.5">
-        <div
-          className="h-4 w-full rounded-full bg-muted overflow-hidden"
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label={`Overall stewardship score: ${pct} out of 100`}
-        >
+        <div className="relative">
           <div
-            className={`h-full rounded-full transition-all ${scoreBarColor(pct)}`}
-            style={{ width: `${pct}%` }}
+            className="h-4 w-full rounded-full bg-muted overflow-hidden"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`Overall stewardship score: ${pct} out of 100`}
+          >
+            <div
+              className={`h-full rounded-full transition-all ${scoreBarColor(pct)}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          {/* ACT NOW threshold marker — overlaid at the 60% position */}
+          <div
+            className="absolute top-0 h-4 w-0.5 bg-amber-500"
+            style={{ left: "60%" }}
+            aria-hidden="true"
           />
         </div>
         <div className="flex justify-between text-xs text-muted-foreground">
           <span>0</span>
-          <span className="text-amber-600 font-medium">
+          <span className="text-sm font-semibold text-amber-600">
             Iowa ACT NOW threshold: 60
           </span>
           <span>100</span>
-        </div>
-        {/* ACT NOW threshold marker */}
-        <div className="relative">
-          <div
-            className="absolute top-0 h-2 w-0.5 bg-amber-400"
-            style={{ left: "60%" }}
-            aria-hidden="true"
-          />
         </div>
       </div>
 

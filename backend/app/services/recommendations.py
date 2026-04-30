@@ -23,6 +23,9 @@ from app.services.validators import (
 
 logger = logging.getLogger(__name__)
 
+# Shared Anthropic client — created once per process, not per request.
+_anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -51,10 +54,8 @@ async def _call_claude(system_prompt: str, user_message: str) -> str | None:
 
     Returns None if the API call fails or returns no content.
     """
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
     try:
-        message = await client.messages.create(
+        message = await _anthropic_client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
             temperature=_TEMPERATURE,

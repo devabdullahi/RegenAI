@@ -1,21 +1,22 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import {
   CheckCircle2,
   Circle,
   ExternalLink,
   Info,
   ChevronRight,
+  AlertCircle,
+  ShieldCheck,
 } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
-import { mockFarms } from "@/lib/mocks/farms";
-import { mockCSPChecklist, mockCSPEligibility } from "@/lib/mocks/csp";
+import { api } from "@/lib/api/client";
 
 import type { Metadata } from "next";
-import type { CSPChecklistItem } from "@/lib/api/types";
+import type { CSPChecklistItem, CSPEligibility } from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "CSP Application Checklist — RegenAI",
@@ -23,6 +24,68 @@ export const metadata: Metadata = {
 
 interface ChecklistPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}
+
+// ── Derive checklist from live eligibility data ───────────────────────────────
+
+function buildChecklist(eligibility: CSPEligibility, farmHasFields: boolean): {
+  overall_readiness_pct: number;
+  checklist: CSPChecklistItem[];
+} {
+  const hasEnhancements = eligibility.active_enhancement_codes.length > 0;
+  const hasCommitment = eligibility.rc_count_will_meet > 0;
+  const rcMet = eligibility.rc_count_above_threshold >= 2;
+  const readinessPct = eligibility.application_readiness_pct;
+
+  const checklist: CSPChecklistItem[] = [
+    {
+      item_id: "has_fields",
+      label: "Farm has registered fields",
+      completed: farmHasFields,
+      detail: farmHasFields
+        ? "Fields are registered in your farm profile"
+        : "Add at least one field to your farm profile",
+      action: farmHasFields ? undefined : "Add fields in your farm settings",
+    },
+    {
+      item_id: "rc_threshold_2",
+      label: "Meets conservation threshold on 2 or more areas",
+      completed: rcMet,
+      detail: rcMet
+        ? `${eligibility.rc_count_above_threshold} of 8 resource concerns currently above the stewardship threshold`
+        : `${eligibility.rc_count_above_threshold} of 2 required areas met — additional practices needed`,
+      action: rcMet ? undefined : "Review your resource concerns in the Eligibility tab",
+    },
+    {
+      item_id: "commitment_selected",
+      label: "Committed to improving at least 1 more conservation area",
+      completed: hasCommitment,
+      detail: hasCommitment
+        ? "Enhancement activities selected and committed"
+        : "Select an enhancement activity to commit to meeting one additional resource concern",
+      action: hasCommitment ? undefined : "Choose an enhancement to add to your committed list",
+    },
+    {
+      item_id: "enhancements_selected",
+      label: "Enhancement activities selected",
+      completed: hasEnhancements,
+      detail: hasEnhancements
+        ? `${eligibility.active_enhancement_codes.length} enhancement${eligibility.active_enhancement_codes.length !== 1 ? "s" : ""} selected: ${eligibility.active_enhancement_codes.join(", ")}`
+        : "No enhancement activities chosen yet",
+      action: hasEnhancements ? undefined : "Browse available enhancements",
+    },
+    {
+      item_id: "contact_nrcs",
+      label: "Contact your local NRCS office to submit your application",
+      completed: false,
+      detail:
+        "Final step: your local NRCS conservation planner will schedule a site visit and finalize your contract",
+      action:
+        "Find your local office at farmers.gov/contact/service-center-locator",
+    },
+  ];
+
+  return { overall_readiness_pct: readinessPct, checklist };
 }
 
 // ── Readiness bar ─────────────────────────────────────────────────────────────
@@ -67,10 +130,14 @@ function ReadinessBar({ pct }: { pct: number }) {
 
 // ── Single checklist item ─────────────────────────────────────────────────────
 
-function ChecklistRow({ item }: { item: CSPChecklistItem }) {
+function ChecklistRow({ item, farmId }: { item: CSPChecklistItem; farmId: string }) {
   const isNrcsLink =
     item.action?.startsWith("https://") ||
     item.action?.includes("farmers.gov");
+
+  const isEnhancementsAction =
+    item.item_id === "enhancements_selected" ||
+    item.item_id === "commitment_selected";
 
   return (
     <li
@@ -90,9 +157,7 @@ function ChecklistRow({ item }: { item: CSPChecklistItem }) {
         )}
       </div>
       <div className="flex-1 min-w-0 space-y-1">
-        <p
-          className={`text-sm font-medium leading-snug ${item.completed ? "text-foreground" : "text-foreground"}`}
-        >
+        <p className="text-sm font-medium leading-snug text-foreground">
           {item.label}
         </p>
         <p className="text-xs text-muted-foreground leading-relaxed">
@@ -101,16 +166,22 @@ function ChecklistRow({ item }: { item: CSPChecklistItem }) {
         {!item.completed && item.action && (
           isNrcsLink ? (
             <a
-              href={`https://${item.action.replace(/^https?:\/\//, "")}`}
+              href="https://www.farmers.gov/contact/service-center-locator"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0 py-1"
             >
-              {item.action.includes("farmers.gov")
-                ? "Find my local NRCS office"
-                : item.action}
+              Find my local NRCS office
               <ExternalLink className="h-3 w-3" aria-hidden="true" />
             </a>
+          ) : isEnhancementsAction ? (
+            <Link
+              href={`/csp/enhancements?farm_id=${farmId}`}
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0 py-1"
+            >
+              Browse enhancements
+              <ChevronRight className="h-3 w-3" aria-hidden="true" />
+            </Link>
           ) : (
             <p className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 rounded px-2 py-1 border border-amber-200 mt-0.5">
               <ChevronRight className="h-3 w-3" aria-hidden="true" />
@@ -133,9 +204,11 @@ function ChecklistRow({ item }: { item: CSPChecklistItem }) {
 function ChecklistGroup({
   label,
   items,
+  farmId,
 }: {
   label: string;
   items: CSPChecklistItem[];
+  farmId: string;
 }) {
   const completedCount = items.filter((i) => i.completed).length;
 
@@ -151,9 +224,53 @@ function ChecklistGroup({
       </div>
       <ul className="space-y-2" aria-label={label}>
         {items.map((item) => (
-          <ChecklistRow key={item.item_id} item={item} />
+          <ChecklistRow key={item.item_id} item={item} farmId={farmId} />
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ── Error / no-farm states ────────────────────────────────────────────────────
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50">
+        <AlertCircle className="h-7 w-7 text-red-500" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Unable to load checklist
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
+      </div>
+      <Link href="/farms">
+        <Button variant="outline" className="min-h-[48px]">
+          Back to farms
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+function NoFarmSelected() {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
+        <ShieldCheck className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Select a farm first
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+          Choose a farm to view your CSP application checklist.
+        </p>
+      </div>
+      <Link href="/farms">
+        <Button className="min-h-[48px]">Go to My Farms</Button>
+      </Link>
     </div>
   );
 }
@@ -164,29 +281,38 @@ export default async function CspChecklistPage({
   searchParams,
 }: ChecklistPageProps) {
   const params = await searchParams;
-  const farmIdParam =
+  const farmId =
     typeof params.farm_id === "string" ? params.farm_id : undefined;
 
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
-    redirect("/farms");
+  if (!farmId) {
+    return <NoFarmSelected />;
   }
 
-  const checklist = mockCSPChecklist;
-  const eligibility = mockCSPEligibility;
+  let eligibility: CSPEligibility;
+  let farmName: string;
+  let hasFields: boolean;
 
-  // Split checklist into groups by item_id
-  const farmDataItems = checklist.checklist.filter((i) =>
-    ["has_fields", "has_soil_data", "nutrient_mgmt_plan"].includes(i.item_id)
+  try {
+    const [elig, farm, fields] = await Promise.all([
+      api.csp.getEligibility(farmId),
+      api.farms.get(farmId),
+      api.fields.list(farmId),
+    ]);
+    eligibility = elig;
+    farmName = farm.name;
+    hasFields = fields.length > 0;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "An unexpected error occurred.";
+    return <ErrorState message={message} />;
+  }
+
+  const { overall_readiness_pct, checklist } = buildChecklist(eligibility, hasFields);
+
+  const programItems = checklist.filter((i) =>
+    ["has_fields", "rc_threshold_2", "commitment_selected", "enhancements_selected"].includes(i.item_id)
   );
-  const programItems = checklist.checklist.filter((i) =>
-    ["rc_threshold_2", "commitment_selected", "enhancements_selected"].includes(
-      i.item_id
-    )
-  );
-  const nextStepItems = checklist.checklist.filter((i) =>
+  const nextStepItems = checklist.filter((i) =>
     ["contact_nrcs"].includes(i.item_id)
   );
 
@@ -196,11 +322,11 @@ export default async function CspChecklistPage({
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <Link href="/farms" className="hover:text-foreground transition-colors">
-            {farm.name}
+            {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farm.id}`}
+            href={`/csp?farm_id=${farmId}`}
             className="hover:text-foreground transition-colors"
           >
             CSP Navigator
@@ -222,24 +348,45 @@ export default async function CspChecklistPage({
       {/* Readiness bar */}
       <Card>
         <CardContent className="pt-5">
-          <ReadinessBar pct={checklist.overall_readiness_pct} />
+          <ReadinessBar pct={overall_readiness_pct} />
         </CardContent>
       </Card>
 
       {/* Checklist groups */}
       <div className="space-y-6">
-        {farmDataItems.length > 0 && (
-          <ChecklistGroup label="Your farm data" items={farmDataItems} />
-        )}
-        <Separator />
         {programItems.length > 0 && (
-          <ChecklistGroup label="Program requirements" items={programItems} />
+          <ChecklistGroup
+            label="Program requirements"
+            items={programItems}
+            farmId={farmId}
+          />
         )}
         <Separator />
         {nextStepItems.length > 0 && (
-          <ChecklistGroup label="Next steps" items={nextStepItems} />
+          <ChecklistGroup
+            label="Next steps"
+            items={nextStepItems}
+            farmId={farmId}
+          />
         )}
       </div>
+
+      {/* Missing requirements callout */}
+      {eligibility.missing_requirements.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-2">
+          <p className="text-sm font-semibold text-amber-800">
+            Still needed to strengthen your application
+          </p>
+          <ul className="space-y-1">
+            {eligibility.missing_requirements.map((req, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-amber-700">
+                <span aria-hidden="true" className="mt-1">•</span>
+                {req}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Disclaimer */}
       <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 px-4 py-4">

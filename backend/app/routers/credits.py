@@ -11,10 +11,18 @@ farms they own.
 """
 
 import logging
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_authenticated_client, get_current_user
+from app.main import limiter
+from app.models.schemas import (
+    CreditEligibilityGetResponse,
+    CreditEvaluateResponse,
+    CreditReportResponse,
+)
 from app.services.eqip import evaluate_eqip_eligibility
 from app.services.vcm import estimate_vcm_credits
 
@@ -27,7 +35,7 @@ router = APIRouter(prefix="/credits", tags=["Credits"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _assert_farm_access(farm_id: str, supabase) -> None:
+async def _assert_farm_access(farm_id: UUID, supabase) -> None:
     """Raise HTTP 404 if the farm does not exist or the user cannot access it.
 
     Because the supabase client already has the user's JWT set, RLS will
@@ -41,14 +49,9 @@ async def _assert_farm_access(farm_id: str, supabase) -> None:
     Raises:
         HTTPException: 404 if the farm is not found or not accessible.
     """
-    result = (
-        supabase.table("farms")
-        .select("id")
-        .eq("id", farm_id)
-        .single()
-        .execute()
-    )
-    if not result.data:
+    try:
+        supabase.table("farms").select("id").eq("id", str(farm_id)).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Farm not found")
 
 
@@ -56,9 +59,9 @@ async def _assert_farm_access(farm_id: str, supabase) -> None:
 # GET /credits
 # ---------------------------------------------------------------------------
 
-@router.get("/")
+@router.get("/", response_model=CreditEligibilityGetResponse)
 async def get_credit_eligibility(
-    farm_id: str,
+    farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -81,7 +84,7 @@ async def get_credit_eligibility(
         result = (
             supabase.table("credit_eligibility")
             .select("*")
-            .eq("farm_id", farm_id)
+            .eq("farm_id", str(farm_id))
             .order("updated_at", desc=True)
             .execute()
         )
@@ -112,9 +115,11 @@ async def get_credit_eligibility(
 # POST /credits/evaluate
 # ---------------------------------------------------------------------------
 
-@router.post("/evaluate")
+@router.post("/evaluate", response_model=CreditEvaluateResponse)
+@limiter.limit("20/hour")
 async def evaluate_credits(
-    farm_id: str,
+    request: Request,
+    farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -134,9 +139,11 @@ async def evaluate_credits(
     """
     await _assert_farm_access(farm_id, supabase)
 
+    farm_id_str = str(farm_id)
+
     # Run EQIP evaluation
     try:
-        eqip_result = await evaluate_eqip_eligibility(farm_id, supabase)
+        eqip_result = await evaluate_eqip_eligibility(farm_id_str, supabase)
     except ValueError as exc:
         logger.warning("credits: EQIP evaluation failed for farm=%s: %s", farm_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
@@ -149,7 +156,7 @@ async def evaluate_credits(
 
     # Run VCM estimation
     try:
-        vcm_result = await estimate_vcm_credits(farm_id, supabase)
+        vcm_result = await estimate_vcm_credits(farm_id_str, supabase)
     except ValueError as exc:
         logger.warning("credits: VCM evaluation failed for farm=%s: %s", farm_id, exc)
         raise HTTPException(status_code=400, detail=str(exc))
@@ -187,9 +194,9 @@ async def evaluate_credits(
 # GET /credits/report
 # ---------------------------------------------------------------------------
 
-@router.get("/report")
+@router.get("/report", response_model=CreditReportResponse)
 async def get_credit_report(
-    farm_id: str,
+    farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -213,6 +220,7 @@ async def get_credit_report(
         metadata, field list, EQIP eligibility, VCM credit estimate, and
         a generated_at timestamp.
     """
+    farm_id_str = str(farm_id)
     await _assert_farm_access(farm_id, supabase)
 
     # ------------------------------------------------------------------
@@ -222,11 +230,13 @@ async def get_credit_report(
         farm_result = (
             supabase.table("farms")
             .select("*")
-            .eq("id", farm_id)
+            .eq("id", farm_id_str)
             .single()
             .execute()
         )
         farm: dict = farm_result.data or {}
+    except APIError:
+        raise HTTPException(status_code=404, detail="Farm not found")
     except Exception:
         logger.exception("credits/report: failed to fetch farm=%s", farm_id)
         raise HTTPException(status_code=500, detail="Failed to retrieve farm data.")
@@ -238,7 +248,7 @@ async def get_credit_report(
         fields_result = (
             supabase.table("fields")
             .select("id, name, acres, crop_type, practices")
-            .eq("farm_id", farm_id)
+            .eq("farm_id", farm_id_str)
             .execute()
         )
         fields: list[dict] = fields_result.data or []
@@ -256,7 +266,7 @@ async def get_credit_report(
         eligibility_result = (
             supabase.table("credit_eligibility")
             .select("*")
-            .eq("farm_id", farm_id)
+            .eq("farm_id", farm_id_str)
             .execute()
         )
         for row in eligibility_result.data or []:
@@ -276,7 +286,7 @@ async def get_credit_report(
     vcm_detail: dict | None = None
     if vcm_record:
         try:
-            vcm_detail = await estimate_vcm_credits(farm_id, supabase)
+            vcm_detail = await estimate_vcm_credits(farm_id_str, supabase)
         except Exception:
             logger.exception(
                 "credits/report: VCM re-estimation failed for farm=%s", farm_id

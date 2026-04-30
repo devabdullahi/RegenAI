@@ -29,8 +29,18 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
+  // Production guard: never allow auth bypass in production
+  if (
+    process.env.DEV_AUTH_BYPASS === "true" &&
+    process.env.NODE_ENV === "production"
+  ) {
+    throw new Error(
+      "DEV_AUTH_BYPASS cannot be enabled in production. Remove it from your environment."
+    );
+  }
+
   // DEV ONLY: Auth bypass — remove before production
-  if (process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true") {
+  if (process.env.DEV_AUTH_BYPASS === "true") {
     return supabaseResponse;
   }
 

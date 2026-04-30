@@ -61,7 +61,7 @@ const scoutSchema = commonSchema.extend({
   activity_type: z.literal("scout"),
   pest_type: z.enum(["insect", "disease", "weed", "other"]),
   pest_name: z.string().min(1, "Pest or problem name required"),
-  severity: z.enum(["none", "low", "medium", "high", "critical"]),
+  severity: z.enum(["none", "low", "moderate", "high", "critical"]),
   threshold_exceeded: z.boolean(),
   action_taken: z.string().optional(),
 });
@@ -526,10 +526,10 @@ function ScoutFields({
 
       {/* Severity slider as big buttons */}
       <div className="space-y-1.5">
-        <p className="text-base font-medium text-foreground">
+        <p id="severity-label" className="text-base font-medium text-foreground">
           Pressure Level <span className="text-red-500" aria-hidden="true">*</span>
         </p>
-        <div className="flex gap-2">
+        <div role="group" aria-labelledby="severity-label" className="flex gap-2">
           {SEVERITY_OPTIONS.map((opt) => (
             <button
               key={opt.value}

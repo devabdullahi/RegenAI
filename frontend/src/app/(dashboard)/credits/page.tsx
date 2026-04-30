@@ -1,14 +1,14 @@
 import Link from "next/link";
-import { Tractor, FileText } from "lucide-react";
+import { Tractor, FileText, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { EqipDetail } from "@/components/credits/eqip-detail";
 import { VcmDetail } from "@/components/credits/vcm-detail";
 import { DocumentUpload } from "@/components/credits/document-upload";
-import { mockFarms, mockFields, mockCredits } from "@/lib/mocks/farms";
+import { api } from "@/lib/api/client";
 import type { Metadata } from "next";
-import type { Document } from "@/lib/api/types";
+import type { Document, Farm, Field, CreditEligibility } from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "Credits & Programs — RegenAI",
@@ -22,24 +22,37 @@ interface CreditsPageProps {
 
 export default async function CreditsPage({ searchParams }: CreditsPageProps) {
   const params = await searchParams;
-  const farmIdParam =
-    typeof params.farm_id === "string" ? params.farm_id : undefined;
+  const farmId =
+    typeof params.farm_id === "string"
+      ? params.farm_id
+      : typeof params.farm === "string"
+        ? params.farm
+        : undefined;
 
-  // Default to first farm when no farm_id provided
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
+  if (!farmId) {
     return <NoFarmState />;
   }
 
-  const farmFields = mockFields.filter((f) => f.farm_id === farm.id);
-  const credits = mockCredits.filter((c) => c.farm_id === farm.id);
+  let farm: Farm;
+  let farmFields: Field[];
+  let credits: CreditEligibility[];
+  let documents: Document[];
+
+  try {
+    [farm, farmFields, credits, documents] = await Promise.all([
+      api.farms.get(farmId),
+      api.fields.list(farmId),
+      api.credits.getReport(farmId),
+      api.documents.list(farmId),
+    ]);
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load credits data.";
+    return <CreditsError message={message} />;
+  }
+
   const eqipCredit = credits.find((c) => c.program === "EQIP");
   const vcmCredit = credits.find((c) => c.program === "VCM");
-
-  // Empty document list — Supabase Storage integration TBD
-  const documents: Document[] = [];
 
   return (
     <div className="pb-20 sm:pb-0 space-y-10">
@@ -88,7 +101,7 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
   );
 }
 
-// ── Empty states ──────────────────────────────────────────────
+// ── Empty states ──────────────────────────────────────────────────────────────
 
 function NoProgramData({ program }: { program: string }) {
   return (
@@ -105,6 +118,44 @@ function NoProgramData({ program }: { program: string }) {
           ? "Your EQIP eligibility assessment is pending. RegenAI will notify you when results are ready."
           : "Your VCM credit estimate will appear here once your practices are documented."}
       </p>
+    </div>
+  );
+}
+
+function CreditsError({ message }: { message: string }) {
+  return (
+    <div className="pb-20 sm:pb-0">
+      <div className="mb-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground">
+          Credits &amp; Programs
+        </h1>
+      </div>
+      <Card className="py-12 text-center">
+        <CardContent className="flex flex-col items-center gap-5">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
+            <AlertCircle
+              className="h-8 w-8 text-destructive"
+              aria-hidden="true"
+            />
+          </div>
+          <div className="max-w-sm">
+            <h2 className="font-heading text-lg font-semibold text-foreground">
+              Could not load credits
+            </h2>
+            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+              {message}
+            </p>
+          </div>
+          <Link href="/farms">
+            <Button
+              variant="outline"
+              className="min-h-[48px] cursor-pointer"
+            >
+              Back to farms
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -127,7 +178,7 @@ function NoFarmState() {
           </div>
           <div className="max-w-sm">
             <h2 className="font-heading text-lg font-semibold text-foreground">
-              No farm found
+              No farm selected
             </h2>
             <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
               Add a farm first to start tracking EQIP eligibility and carbon

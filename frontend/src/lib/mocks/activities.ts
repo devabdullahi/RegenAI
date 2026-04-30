@@ -275,8 +275,8 @@ function computeAPH(fieldId: string): APHResult {
   const avg =
     records.reduce((sum, r) => sum + r.yield_bu_ac, 0) / records.length;
 
-  const oldest = records[records.length - 1].yield_bu_ac;
-  const newest = records[0].yield_bu_ac;
+  const oldest = records[records.length - 1]?.yield_bu_ac ?? 0;
+  const newest = records[0]?.yield_bu_ac ?? 0;
   const trendPct = ((newest - oldest) / oldest) * 100;
 
   return {
@@ -305,12 +305,15 @@ export function getActivitySummary(farmId: string): ActivitySummary {
       new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime()
   );
 
-  const byType = {
+  const byType: Record<import("@/lib/api/types").ActivityType, number> = {
     plant: 0,
     spray: 0,
     fertilize: 0,
     scout: 0,
     harvest: 0,
+    tillage: 0,
+    cover_crop: 0,
+    other: 0,
   };
   farmActivities.forEach((a) => {
     byType[a.activity_type]++;

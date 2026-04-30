@@ -2,11 +2,10 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Tractor, LayoutDashboard } from "lucide-react";
+import { Tractor, LayoutDashboard, AlertCircle } from "lucide-react";
 import { FieldSelector } from "@/components/dashboard/field-selector";
 import {
   RecommendationCard,
-  RecommendationCardSkeleton,
   RecommendationsEmpty,
 } from "@/components/dashboard/recommendation-card";
 import { WeatherWidget } from "@/components/dashboard/weather-widget";
@@ -14,17 +13,8 @@ import { SoilWidget } from "@/components/dashboard/soil-widget";
 import { CreditPanel } from "@/components/dashboard/credit-panel";
 import { CspStatusWidget } from "@/components/csp/csp-status-widget";
 import { RecentActivityWidget } from "@/components/activities/recent-activity-widget";
-
-import {
-  mockFarms,
-  mockFields,
-  mockRecommendations,
-  mockSoilProfile,
-  mockWeather,
-  mockCredits,
-} from "@/lib/mocks/farms";
-import { mockCSPEligibility } from "@/lib/mocks/csp";
-import { getActivitySummary } from "@/lib/mocks/activities";
+import { api } from "@/lib/api/client";
+import type { Farm, Field, Recommendation, CreditEligibility, ActivitySummary, CSPEligibility } from "@/lib/api/types";
 
 interface DashboardPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -45,14 +35,34 @@ export default async function DashboardPage({
     return <NoFarmSelected />;
   }
 
-  // Look up farm
-  const farm = mockFarms.find((f) => f.id === farmId);
-  if (!farm) {
+  // Fetch farm, fields, and dashboard data concurrently
+  let farm: Farm;
+  let farmFields: Field[];
+  let recommendations: Recommendation[];
+  let credits: CreditEligibility[];
+  let activitySummary: ActivitySummary;
+  let cspEligibility: CSPEligibility | null;
+
+  try {
+    farm = await api.farms.get(farmId);
+  } catch {
     return <NoFarmSelected />;
   }
 
-  // Fields for this farm
-  const farmFields = mockFields.filter((f) => f.farm_id === farmId);
+  try {
+    [farmFields, recommendations, credits, activitySummary, cspEligibility] =
+      await Promise.all([
+        api.fields.list(farmId),
+        api.recommendations.list(farmId),
+        api.credits.getReport(farmId),
+        api.activities.list(farmId),
+        api.csp.getEligibility(farmId).catch(() => null),
+      ]);
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load dashboard data.";
+    return <DashboardError message={message} farmId={farmId} />;
+  }
 
   // Default to first field if no field param
   const selectedField =
@@ -71,19 +81,14 @@ export default async function DashboardPage({
     );
   }
 
-  // Filter mock data by selected field
-  const recommendations = mockRecommendations.filter(
+  // Filter recommendations to the selected field
+  const fieldRecommendations = recommendations.filter(
     (r) => r.field_id === selectedField.id
   );
-  const soilProfile =
-    mockSoilProfile.field_id === selectedField.id ? mockSoilProfile : null;
-  const weather = mockWeather.filter(
-    (w) => w.field_id === selectedField.id
-  );
-  const credits = mockCredits.filter((c) => c.farm_id === farmId);
-  const activitySummary = getActivitySummary(farmId);
+
+  // Build field name map for the activity widget
   const fieldNameMap = Object.fromEntries(
-    mockFields.map((f) => [f.id, f.name])
+    farmFields.map((f) => [f.id, f.name])
   );
 
   return (
@@ -144,11 +149,11 @@ export default async function DashboardPage({
           </p>
         </div>
 
-        {recommendations.length === 0 ? (
+        {fieldRecommendations.length === 0 ? (
           <RecommendationsEmpty />
         ) : (
           <div className="space-y-4">
-            {recommendations.map((rec) => (
+            {fieldRecommendations.map((rec) => (
               <RecommendationCard key={rec.id} recommendation={rec} />
             ))}
           </div>
@@ -170,8 +175,8 @@ export default async function DashboardPage({
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <WeatherWidget weather={weather} />
-          <SoilWidget soil={soilProfile} />
+          <WeatherWidget weather={[]} />
+          <SoilWidget soil={null} />
         </div>
       </section>
 
@@ -189,10 +194,12 @@ export default async function DashboardPage({
           </p>
         </div>
 
-        {/* CSP Navigator widget */}
-        <div className="mb-3">
-          <CspStatusWidget eligibility={mockCSPEligibility} farmId={farmId} />
-        </div>
+        {/* CSP Navigator widget — only render when data is available */}
+        {cspEligibility && (
+          <div className="mb-3">
+            <CspStatusWidget eligibility={cspEligibility} farmId={farmId} />
+          </div>
+        )}
 
         <CreditPanel credits={credits} farmId={farmId} />
       </section>
@@ -218,6 +225,50 @@ export default async function DashboardPage({
     </div>
   );
 }
+
+// ── Error state ───────────────────────────────────────────────────────────────
+
+function DashboardError({
+  message,
+  farmId,
+}: {
+  message: string;
+  farmId: string;
+}) {
+  return (
+    <div className="pb-20 sm:pb-0">
+      <Card className="py-10">
+        <CardContent className="flex flex-col items-center gap-4 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-destructive/10">
+            <AlertCircle className="h-7 w-7 text-destructive" aria-hidden="true" />
+          </div>
+          <div className="max-w-sm">
+            <h2 className="font-heading text-lg font-semibold text-foreground">
+              Could not load dashboard
+            </h2>
+            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+              {message}
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 w-full max-w-xs">
+            <Link href={`/dashboard?farm=${farmId}`}>
+              <Button className="w-full min-h-[48px] cursor-pointer">
+                Try again
+              </Button>
+            </Link>
+            <Link href="/farms">
+              <Button variant="outline" className="w-full min-h-[48px] cursor-pointer">
+                Back to farms
+              </Button>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ── No farm selected ──────────────────────────────────────────────────────────
 
 function NoFarmSelected() {
   return (

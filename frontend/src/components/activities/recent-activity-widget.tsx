@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Sprout, Droplets, FlaskConical, Eye, Wheat, ChevronRight } from "lucide-react";
+import { Sprout, Droplets, FlaskConical, Eye, Wheat, Shovel, Leaf, ClipboardList, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { ActivityType, FieldActivity } from "@/lib/api/types";
@@ -13,6 +13,9 @@ const TYPE_CONFIG: Record<
   fertilize: { icon: FlaskConical, bg: "bg-amber-100", iconColor: "text-amber-600", label: "Fertilize" },
   scout: { icon: Eye, bg: "bg-purple-100", iconColor: "text-purple-600", label: "Scouting" },
   harvest: { icon: Wheat, bg: "bg-orange-100", iconColor: "text-orange-600", label: "Harvest" },
+  tillage: { icon: Shovel, bg: "bg-stone-100", iconColor: "text-stone-600", label: "Tillage" },
+  cover_crop: { icon: Leaf, bg: "bg-teal-100", iconColor: "text-teal-600", label: "Cover Crop" },
+  other: { icon: ClipboardList, bg: "bg-gray-100", iconColor: "text-gray-600", label: "Other" },
 };
 
 interface RecentActivityWidgetProps {
