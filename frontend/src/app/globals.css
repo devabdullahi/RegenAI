@@ -51,6 +51,10 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-soil: var(--soil);
+  --color-soil-foreground: var(--soil-foreground);
+  --color-weather: var(--weather);
+  --color-weather-foreground: var(--weather-foreground);
 }
 
 /* ============================================
@@ -83,8 +87,16 @@
   /* Semantic colors */
   --success: oklch(0.527 0.135 152.5);        /* same as primary */
   --success-foreground: oklch(1 0 0);
-  --warning: oklch(0.504 0.128 72);           /* same as accent */
-  --warning-foreground: oklch(1 0 0);
+  --warning: oklch(0.75 0.18 55);             /* true amber — distinct from harvest gold accent */
+  --warning-foreground: oklch(0.145 0.02 265);
+  /* RegenAI extended semantic tokens */
+  --soil: oklch(0.52 0.02 60);               /* warm brown — secondary text, borders (#78716C / stone-500) */
+  --soil-foreground: oklch(1 0 0);
+  --weather: oklch(0.648 0.164 232);          /* sky blue — weather/water data (#0EA5E9) */
+  --weather-foreground: oklch(1 0 0);
+  /* Field mode tokens — high-contrast for outdoor use */
+  --field-mode-bg: #1A1A1A;
+  --field-mode-fg: #FFFDE7;
   /* Chart colors — agriculture themed */
   --chart-1: oklch(0.527 0.135 152.5);        /* earth green */
   --chart-2: oklch(0.504 0.128 72);           /* harvest gold */
@@ -124,8 +136,14 @@
   --ring: oklch(0.723 0.191 149.6);
   --success: oklch(0.723 0.191 149.6);
   --success-foreground: oklch(0.145 0.02 265);
-  --warning: oklch(0.6 0.128 72);
+  --warning: oklch(0.75 0.18 55);             /* true amber in dark mode */
   --warning-foreground: oklch(0.145 0.02 265);
+  --soil: oklch(0.62 0.02 60);               /* warm brown lifted for dark mode */
+  --soil-foreground: oklch(0.145 0.02 265);
+  --weather: oklch(0.72 0.164 232);           /* sky blue lifted for dark mode */
+  --weather-foreground: oklch(0.145 0.02 265);
+  --field-mode-bg: #1A1A1A;
+  --field-mode-fg: #FFFDE7;
   --chart-1: oklch(0.723 0.191 149.6);
   --chart-2: oklch(0.6 0.128 72);
   --chart-3: oklch(0.527 0.135 152.5);
@@ -150,6 +168,10 @@
   }
   html {
     @apply font-sans;
+  }
+  /* Ensure heading font always renders at bold weight */
+  .font-heading {
+    font-weight: 700;
   }
   /* Farmer-specific: minimum touch targets */
   button, [role="button"], a, input, select, textarea {

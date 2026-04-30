@@ -343,14 +343,14 @@ async def estimate_csp_payments(farm_id: str, supabase) -> dict:
     try:
         assessment_result = (
             supabase.table("csp_eligibility_assessments")
-            .select("concerns_meeting_threshold, cart_score")
+            .select("rc_count_above_threshold, stewardship_score")
             .eq("farm_id", farm_id)
             .single()
             .execute()
         )
         if assessment_result.data:
             concerns_meeting_threshold = int(
-                assessment_result.data.get("concerns_meeting_threshold") or 0
+                assessment_result.data.get("rc_count_above_threshold") or 0
             )
     except Exception:
         logger.warning(
@@ -529,13 +529,13 @@ async def get_recommended_enhancements(farm_id: str, supabase) -> list[dict]:
     try:
         assessment_result = (
             supabase.table("csp_eligibility_assessments")
-            .select("score_breakdown")
+            .select("resource_concerns_met")
             .eq("farm_id", farm_id)
             .single()
             .execute()
         )
         if assessment_result.data:
-            score_bd = assessment_result.data.get("score_breakdown") or {}
+            score_bd = assessment_result.data.get("resource_concerns_met") or {}
             for concern in score_bd.get("resource_concern_scores", []):
                 if not concern.get("meets_threshold", False):
                     below_threshold_concerns.add(concern["concern_id"])

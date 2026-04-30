@@ -156,15 +156,14 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
     now = datetime.now(tz=timezone.utc).isoformat()
     assessment_payload = {
         "farm_id": farm_id,
-        "status": status,
+        "eligibility_status": status,
         "is_eligible": is_eligible,
-        "concerns_meeting_threshold": concerns_meeting,
-        "cart_score": cart_score,
-        "state_ranking_threshold": ranking_threshold,
-        "meets_ranking_threshold": meets_ranking_threshold,
-        "eligibility_notes": notes,
-        "recommended_enhancements": recommended_enhancements,
-        "score_breakdown": score_data,
+        "rc_count_above_threshold": concerns_meeting,
+        "stewardship_score": int(cart_score),
+        "act_now_eligible": meets_ranking_threshold,
+        "notes": notes,
+        "active_enhancement_codes": recommended_enhancements,
+        "resource_concerns_met": score_data,
         "evaluated_at": now,
     }
 

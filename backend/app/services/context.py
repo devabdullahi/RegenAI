@@ -169,7 +169,27 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
         warnings.append("Could not fetch EQIP practice reference data")
 
     # ------------------------------------------------------------------
-    # 8. Assemble the context dict
+    # 8. CSP eligibility assessment (non-fatal)
+    # ------------------------------------------------------------------
+    csp_assessment: dict | None = None
+    try:
+        csp_result = (
+            supabase.table("csp_eligibility_assessments")
+            .select(
+                "eligibility_status, rc_count_above_threshold, stewardship_score, "
+                "notes, act_now_eligible, evaluated_at"
+            )
+            .eq("farm_id", farm_id)
+            .single()
+            .execute()
+        )
+        if csp_result.data:
+            csp_assessment = csp_result.data
+    except Exception:
+        logger.warning("Could not fetch CSP assessment for farm=%s", farm_id)
+
+    # ------------------------------------------------------------------
+    # 9. Assemble the context dict
     # ------------------------------------------------------------------
     context = {
         "farm": {
@@ -222,6 +242,7 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
             for r in acted_recommendations
         ],
         "eqip_practices": eqip_practices,
+        "csp_assessment": csp_assessment,
         "data_warnings": warnings,
         "assembled_at": datetime.now(tz=timezone.utc).isoformat(),
     }

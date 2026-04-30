@@ -1,9 +1,10 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
-from app.models.schemas import FieldCreate, FieldResponse, SoilProfileResponse, WeatherResponse
+from app.models.schemas import FieldCreate, FieldUpdate, FieldResponse, SoilProfileResponse, WeatherResponse
 from app.services.enrichment import run_enrichment
 
 logger = logging.getLogger(__name__)
@@ -57,10 +58,51 @@ async def get_field(
     supabase=Depends(get_authenticated_client),
 ):
     """Get a single field."""
-    result = supabase.table("fields").select("*").eq("id", field_id).single().execute()
-    if not result.data:
+    try:
+        result = supabase.table("fields").select("*").eq("id", field_id).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Field not found")
     return result.data
+
+
+@router.patch("/{field_id}", response_model=FieldResponse)
+async def update_field(
+    field_id: str,
+    field: FieldUpdate,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """Partially update a field. Only provided fields are applied."""
+    data = field.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        result = (
+            supabase.table("fields")
+            .update(data)
+            .eq("id", field_id)
+            .single()
+            .execute()
+        )
+    except APIError:
+        raise HTTPException(status_code=404, detail="Field not found")
+    return result.data
+
+
+@router.delete("/{field_id}", status_code=204)
+async def delete_field(
+    field_id: str,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """Delete a field. RLS ensures the user can only delete their own fields.
+    Cascading deletes on the DB handle related soil_profiles, weather_cache,
+    and recommendations rows automatically."""
+    try:
+        supabase.table("fields").select("id").eq("id", field_id).single().execute()
+    except APIError:
+        raise HTTPException(status_code=404, detail="Field not found")
+    supabase.table("fields").delete().eq("id", field_id).execute()
 
 
 @router.get("/{field_id}/soil", response_model=SoilProfileResponse | None)
@@ -119,8 +161,9 @@ async def enrich_field(
     and return immediately with ``{"status": "enrichment_queued"}``.
     """
     # Verify field exists and the authenticated user has RLS access to it.
-    check = supabase.table("fields").select("id").eq("id", field_id).single().execute()
-    if not check.data:
+    try:
+        supabase.table("fields").select("id").eq("id", field_id).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Field not found")
 
     logger.info("Starting enrichment for field=%s user=%s", field_id, user.id)

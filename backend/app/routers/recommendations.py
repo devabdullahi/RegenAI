@@ -1,8 +1,11 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+import anthropic
+from fastapi import APIRouter, Depends, HTTPException, Request
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
+from app.main import limiter
 from app.models.schemas import RecommendationResponse, RecommendationStatusUpdate
 from app.services.recommendations import generate_recommendations as run_generation
 
@@ -48,7 +51,9 @@ async def update_recommendation_status(
 
 
 @router.post("/generate", status_code=202)
+@limiter.limit("10/hour")
 async def generate_recommendations(
+    request: Request,
     farm_id: str,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
@@ -60,17 +65,36 @@ async def generate_recommendations(
     the generated recommendations summary.
     """
     # Verify farm access (RLS ensures the user owns this farm)
-    result = supabase.table("farms").select("id").eq("id", farm_id).single().execute()
-    if not result.data:
+    try:
+        result = supabase.table("farms").select("id").eq("id", farm_id).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Farm not found")
 
     try:
         recommendations = await run_generation(farm_id, supabase)
-    except Exception:
-        logger.exception("Recommendation generation failed for farm=%s", farm_id)
+    except APIError:
+        logger.exception("Database error during recommendation generation for farm=%s", farm_id)
         raise HTTPException(
             status_code=500,
             detail="Recommendation generation failed. Please try again later.",
+        )
+    except anthropic.APIError:
+        logger.exception("Anthropic API error during recommendation generation for farm=%s", farm_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Recommendation generation failed. Please try again later.",
+        )
+    except anthropic.APIConnectionError:
+        logger.exception("Anthropic connection error for farm=%s", farm_id)
+        raise HTTPException(
+            status_code=503,
+            detail="AI service temporarily unavailable. Please try again later.",
+        )
+    except anthropic.RateLimitError:
+        logger.warning("Anthropic rate limit hit for farm=%s", farm_id)
+        raise HTTPException(
+            status_code=503,
+            detail="AI service is busy. Please try again in a few minutes.",
         )
 
     return {

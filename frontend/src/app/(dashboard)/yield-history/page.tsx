@@ -1,13 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { TrendingUp, TrendingDown, Minus, Plus, Info } from "lucide-react";
+import {
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Plus,
+  Info,
+  Loader2,
+  AlertCircle,
+  Tractor,
+} from "lucide-react";
 import { YieldSummaryCard } from "@/components/activities/yield-summary-card";
-import { mockYieldRecords, getAPHForField } from "@/lib/mocks/activities";
-import { mockFields } from "@/lib/mocks/farms";
+import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
-import type { YieldRecord } from "@/lib/api/types";
+import type { APHResult, Field, YieldRecord } from "@/lib/api/types";
 
 // ── Simple bar chart ───────────────────────────────────────────────────────────
 
@@ -39,7 +48,7 @@ function YieldBarChart({ records }: { records: YieldRecord[] }) {
               key={record.id}
               className="flex flex-1 flex-col items-center gap-1"
             >
-              <span className="text-[10px] font-bold text-foreground">
+              <span className="text-sm font-bold text-foreground">
                 {record.yield_bu_ac}
               </span>
               <div
@@ -48,12 +57,12 @@ function YieldBarChart({ records }: { records: YieldRecord[] }) {
                 role="img"
                 aria-label={`${record.crop_year}: ${record.yield_bu_ac} bu/ac ${record.crop_type}`}
               />
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-sm text-foreground">
                 {record.crop_year}
               </span>
               <span
                 className={cn(
-                  "text-[9px] rounded px-1",
+                  "text-xs rounded px-1",
                   record.crop_type.toLowerCase() === "corn"
                     ? "bg-amber-100 text-amber-700"
                     : "bg-green-100 text-green-700"
@@ -74,8 +83,13 @@ function YieldBarChart({ records }: { records: YieldRecord[] }) {
           )
           .map(([crop, color]) => (
             <div key={crop} className="flex items-center gap-1.5">
-              <div className={cn("h-3 w-3 rounded-sm", color)} aria-hidden="true" />
-              <span className="text-xs text-muted-foreground capitalize">{crop}</span>
+              <div
+                className={cn("h-3 w-3 rounded-sm", color)}
+                aria-hidden="true"
+              />
+              <span className="text-xs text-muted-foreground capitalize">
+                {crop}
+              </span>
             </div>
           ))}
       </div>
@@ -164,15 +178,153 @@ function YieldTable({ records }: { records: YieldRecord[] }) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function YieldHistoryPage() {
-  const [selectedFieldId, setSelectedFieldId] = useState<string>(
-    mockFields[0]?.id ?? "field-1"
-  );
+  const searchParams = useSearchParams();
 
-  const selectedField = mockFields.find((f) => f.id === selectedFieldId);
-  const aph = getAPHForField(selectedFieldId);
-  const fieldRecords = mockYieldRecords.filter(
-    (r) => r.field_id === selectedFieldId
-  );
+  // FE-016: Read farm_id from searchParams
+  const farmId =
+    searchParams.get("farm_id") ?? searchParams.get("farm") ?? null;
+
+  const [aphResults, setAphResults] = useState<APHResult[]>([]);
+  const [fields, setFields] = useState<Field[]>([]);
+  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+
+      if (!farmId) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const [aphData, farmFields] = await Promise.all([
+          api.activities.getYieldHistory(farmId),
+          api.fields.list(farmId),
+        ]);
+
+        if (!cancelled) {
+          setAphResults(aphData);
+          setFields(farmFields);
+          // Default to first field that has APH data, else first field
+          const firstWithData = farmFields.find((f) =>
+            aphData.some((a) => a.field_id === f.id)
+          );
+          setSelectedFieldId(
+            firstWithData?.id ?? farmFields[0]?.id ?? null
+          );
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load yield history. Please try again."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [farmId]);
+
+  // Derive data for the selected field
+  const selectedField = fields.find((f) => f.id === selectedFieldId) ?? null;
+  const selectedAph =
+    aphResults.find((a) => a.field_id === selectedFieldId) ?? null;
+  const fieldRecords = selectedAph?.records ?? [];
+
+  // ── No farm selected ─────────────────────────────────────────────────────────
+
+  if (!farmId && !loading) {
+    return (
+      <div className="pb-20 sm:pb-0 space-y-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
+          Yield History
+        </h1>
+        <div className="rounded-xl border border-border bg-card px-6 py-12 text-center">
+          <Tractor
+            className="mx-auto mb-3 h-10 w-10 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <p className="font-heading text-base font-semibold text-foreground">
+            Select a farm to view data
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Choose a farm to see its yield history and APH calculations.
+          </p>
+          <Link href="/farms">
+            <button
+              type="button"
+              className="mt-4 min-h-[48px] rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              Go to My Farms
+            </button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Loading ───────────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="pb-20 sm:pb-0 space-y-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
+          Yield History
+        </h1>
+        <div className="flex items-center justify-center py-20">
+          <Loader2
+            className="h-8 w-8 animate-spin text-muted-foreground"
+            aria-label="Loading yield history"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Error ─────────────────────────────────────────────────────────────────────
+
+  if (error) {
+    return (
+      <div className="pb-20 sm:pb-0 space-y-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
+          Yield History
+        </h1>
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-6 py-10 text-center">
+          <AlertCircle
+            className="mx-auto mb-3 h-9 w-9 text-destructive"
+            aria-hidden="true"
+          />
+          <p className="font-heading text-base font-semibold text-foreground">
+            Could not load yield history
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 min-h-[48px] rounded-lg border border-border px-5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main content ──────────────────────────────────────────────────────────────
 
   return (
     <div className="pb-20 sm:pb-0 space-y-6">
@@ -188,19 +340,17 @@ export default function YieldHistoryPage() {
           </p>
         </div>
 
-        <Link href="/activities/new?type=harvest">
-          <button
-            type="button"
-            className="flex min-h-[52px] items-center gap-2 rounded-xl bg-accent px-5 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Plus className="h-5 w-5" aria-hidden="true" />
-            Add Yield Record
-          </button>
+        <Link
+          href={`/activities/new?type=harvest${farmId ? `&farm_id=${farmId}` : ""}`}
+          className="flex min-h-[52px] items-center gap-2 rounded-xl bg-accent px-5 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Plus className="h-5 w-5" aria-hidden="true" />
+          Add Yield Record
         </Link>
       </div>
 
       {/* Field selector */}
-      {mockFields.length > 1 && (
+      {fields.length > 1 && (
         <div className="space-y-1.5">
           <label
             htmlFor="field-select"
@@ -209,7 +359,7 @@ export default function YieldHistoryPage() {
             View field
           </label>
           <div className="flex flex-wrap gap-2">
-            {mockFields.map((field) => (
+            {fields.map((field) => (
               <button
                 key={field.id}
                 type="button"
@@ -233,9 +383,15 @@ export default function YieldHistoryPage() {
       )}
 
       {/* APH summary */}
-      {selectedField && (
-        <YieldSummaryCard aph={aph} fieldName={selectedField.name} />
-      )}
+      {selectedField && selectedAph ? (
+        <YieldSummaryCard aph={selectedAph} fieldName={selectedField.name} />
+      ) : selectedField ? (
+        <div className="rounded-xl border border-border bg-card px-4 py-8 text-center">
+          <p className="text-sm text-muted-foreground">
+            No APH data available for {selectedField.name} yet.
+          </p>
+        </div>
+      ) : null}
 
       {/* Bar chart */}
       <YieldBarChart records={fieldRecords} />
@@ -251,16 +407,21 @@ export default function YieldHistoryPage() {
       {/* APH explanation */}
       <div className="rounded-xl border border-border bg-card px-4 py-5 space-y-3">
         <div className="flex items-center gap-2">
-          <Info className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
+          <Info
+            className="h-4 w-4 text-primary shrink-0"
+            aria-hidden="true"
+          />
           <h3 className="font-heading text-sm font-semibold text-foreground">
             What is APH and why does it matter?
           </h3>
         </div>
         <div className="space-y-2 text-sm text-muted-foreground leading-relaxed">
           <p>
-            <strong className="text-foreground">APH (Actual Production History)</strong> is
-            the average yield per acre calculated from your last 4–10 years of
-            harvest records. Your crop insurance company uses this number to
+            <strong className="text-foreground">
+              APH (Actual Production History)
+            </strong>{" "}
+            is the average yield per acre calculated from your last 4–10 years
+            of harvest records. Your crop insurance company uses this number to
             set your coverage level.
           </p>
           <p>
@@ -269,9 +430,11 @@ export default function YieldHistoryPage() {
             per acre — which means a bigger payout if disaster strikes.
           </p>
           <p>
-            <strong className="text-foreground">Every harvest you log here</strong> goes
-            into your APH calculation. Accurate records protect you. Missing
-            records can lower your APH and your coverage.
+            <strong className="text-foreground">
+              Every harvest you log here
+            </strong>{" "}
+            goes into your APH calculation. Accurate records protect you.
+            Missing records can lower your APH and your coverage.
           </p>
         </div>
         <div className="pt-1">
@@ -290,7 +453,7 @@ export default function YieldHistoryPage() {
       {/* Quick link back */}
       <div className="text-center">
         <Link
-          href="/activities"
+          href={farmId ? `/activities?farm_id=${farmId}` : "/activities"}
           className="text-sm font-medium text-primary hover:underline"
         >
           Back to Field Activity Log

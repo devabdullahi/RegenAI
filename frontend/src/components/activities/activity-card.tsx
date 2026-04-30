@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { RestrictedUseBadge } from "./restricted-use-badge";
-import { ChevronDown, ChevronUp, Sprout, Droplets, FlaskConical, Eye, Wheat } from "lucide-react";
+import { ChevronDown, ChevronUp, Sprout, Droplets, FlaskConical, Eye, Wheat, Shovel, Leaf, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   FieldActivity,
@@ -57,12 +57,33 @@ const TYPE_CONFIG: Record<
     text: "text-orange-700",
     border: "border-orange-200",
   },
+  tillage: {
+    label: "Tillage",
+    icon: Shovel,
+    bg: "bg-stone-100",
+    text: "text-stone-700",
+    border: "border-stone-200",
+  },
+  cover_crop: {
+    label: "Cover Crop",
+    icon: Leaf,
+    bg: "bg-teal-100",
+    text: "text-teal-700",
+    border: "border-teal-200",
+  },
+  other: {
+    label: "Other",
+    icon: ClipboardList,
+    bg: "bg-gray-100",
+    text: "text-gray-700",
+    border: "border-gray-200",
+  },
 };
 
 const SEVERITY_CONFIG: Record<ScoutingSeverity, { label: string; color: string }> = {
   none: { label: "None", color: "text-muted-foreground" },
   low: { label: "Low", color: "text-green-600" },
-  medium: { label: "Medium", color: "text-amber-600" },
+  moderate: { label: "Moderate", color: "text-amber-600" },
   high: { label: "High", color: "text-red-600" },
   critical: { label: "Critical", color: "text-red-800 font-bold" },
 };

@@ -31,6 +31,7 @@ class LLMRecommendation(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="Short title")
     rationale: str = Field(..., min_length=10, description="Explanation with data citations")
     priority: LLMPriority = Field(default=LLMPriority.medium)
+    csp_impact: str | None = None
 
     @field_validator("practice_code")
     @classmethod

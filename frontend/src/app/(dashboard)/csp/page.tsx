@@ -1,8 +1,6 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import {
   ShieldCheck,
@@ -13,6 +11,7 @@ import {
   Info,
   Lightbulb,
   ChevronRight,
+  AlertCircle,
 } from "lucide-react";
 
 import { CSPEligibilityCard } from "@/components/csp/csp-eligibility-card";
@@ -21,14 +20,10 @@ import { CSPPaymentSummary } from "@/components/csp/csp-payment-summary";
 import { CSPResourceConcerns } from "@/components/csp/csp-resource-concerns";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { mockFarms } from "@/lib/mocks/farms";
-import {
-  mockCSPEligibility,
-  mockCSPScore,
-  mockCSPPayment,
-} from "@/lib/mocks/csp";
+import { api } from "@/lib/api/client";
 
 import type { Metadata } from "next";
+import type { CSPEligibility, CSPScore, CSPPaymentEstimate } from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "CSP Navigator — RegenAI",
@@ -38,6 +33,69 @@ export const metadata: Metadata = {
 
 interface CspPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}
+
+// ── Helpers: derive CSPScore from CSPEligibility ───────────────────────────────
+
+function deriveScore(eligibility: CSPEligibility): CSPScore {
+  const s = eligibility.stewardship_score;
+  const score_label: CSPScore["score_label"] =
+    s >= 80 ? "Excellent" : s >= 60 ? "Good" : s >= 40 ? "Fair" : "Needs Work";
+  const percentile_estimate: CSPScore["percentile_estimate"] =
+    s >= 80
+      ? "top 10%"
+      : s >= 65
+        ? "top 25%"
+        : s >= 50
+          ? "competitive"
+          : "below average";
+
+  const score_breakdown = eligibility.resource_concerns_met.map((rc) => ({
+    resource_concern: rc.name,
+    code: rc.code,
+    points_earned: rc.points_earned,
+    max_points: Math.round(rc.points_earned / Math.max(rc.score / 100, 0.01)),
+    score: rc.score,
+    currently_met: rc.currently_met,
+  }));
+
+  return {
+    farm_id: eligibility.farm_id,
+    stewardship_score: s,
+    score_label,
+    percentile_estimate,
+    base_score: s,
+    bonus_points: Math.max(
+      0,
+      eligibility.estimated_ranking_score - s
+    ),
+    score_breakdown,
+    improvement_recommendations: eligibility.missing_requirements,
+    from_cache: eligibility.from_cache,
+    evaluated_at: eligibility.evaluated_at,
+  };
+}
+
+function derivePayment(eligibility: CSPEligibility): CSPPaymentEstimate {
+  const annual = eligibility.estimated_annual_payment ?? 0;
+  return {
+    farm_id: eligibility.farm_id,
+    state_code: "IA",
+    fiscal_year: eligibility.fiscal_year,
+    total_cropland_acres: 0,
+    rc_count_above_threshold: eligibility.rc_count_above_threshold,
+    eap_annual: annual,
+    enap_annual: 0,
+    raw_annual: annual,
+    capped_annual: annual,
+    contract_5yr_total: eligibility.estimated_5yr_payment ?? annual * 5,
+    per_acre_annual: 0,
+    min_applied: false,
+    max_applied: false,
+    enhancement_breakdown: [],
+    disclaimer:
+      "This is an estimate based on NRCS payment schedules and may differ from the final payment determined by your local NRCS office.",
+  };
 }
 
 // ── Static disclaimer ─────────────────────────────────────────────────────────
@@ -99,21 +157,18 @@ function QuickActions({ farmId }: { farmId: string }) {
       label: "View Application Checklist",
       sublabel: "Step-by-step readiness guide",
       icon: ListChecks,
-      variant: "outline" as const,
     },
     {
       href: `/csp/payment?farm_id=${farmId}`,
       label: "Estimate My Payment",
       sublabel: "Detailed 5-year breakdown",
       icon: DollarSign,
-      variant: "outline" as const,
     },
     {
       href: `/csp/enhancements?farm_id=${farmId}`,
       label: "Browse Enhancements",
       sublabel: "Add activities to increase payment",
       icon: Zap,
-      variant: "outline" as const,
     },
   ];
 
@@ -139,26 +194,86 @@ function QuickActions({ farmId }: { farmId: string }) {
   );
 }
 
+// ── Error state ───────────────────────────────────────────────────────────────
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50">
+        <AlertCircle className="h-7 w-7 text-red-500" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Unable to load CSP data
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
+      </div>
+      <Link href="/farms">
+        <Button variant="outline" className="min-h-[48px]">
+          Back to farms
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+// ── No farm selected ──────────────────────────────────────────────────────────
+
+function NoFarmSelected() {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
+        <ShieldCheck className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Select a farm first
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+          Choose a farm to view its CSP eligibility and payment estimates.
+        </p>
+      </div>
+      <Link href="/farms">
+        <Button className="min-h-[48px]">Go to My Farms</Button>
+      </Link>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default async function CspPage({ searchParams }: CspPageProps) {
   const params = await searchParams;
-  const farmIdParam =
+  const farmId =
     typeof params.farm_id === "string" ? params.farm_id : undefined;
 
-  // Default to first farm when no farm_id provided
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
-    redirect("/farms");
+  if (!farmId) {
+    return <NoFarmSelected />;
   }
 
-  // Use mock data — will be replaced with API calls
-  const eligibility = mockCSPEligibility;
-  const score = mockCSPScore;
-  const payment = mockCSPPayment;
+  let eligibility: CSPEligibility;
+  let farmName: string;
+  let farmState: string;
+  let farmAcres: number;
 
+  try {
+    [eligibility] = await Promise.all([
+      api.csp.getEligibility(farmId),
+    ]);
+
+    // Fetch farm details for the breadcrumb / header
+    const farm = await api.farms.get(farmId);
+    farmName = farm.name;
+    farmState = farm.state;
+    farmAcres = farm.total_acres;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "An unexpected error occurred.";
+    return <ErrorState message={message} />;
+  }
+
+  const score = deriveScore(eligibility);
+  const payment = derivePayment(eligibility);
   const upcomingDeadlines = eligibility.upcoming_deadlines ?? [];
 
   return (
@@ -170,7 +285,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
             href="/farms"
             className="hover:text-foreground transition-colors"
           >
-            {farm.name}
+            {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <span className="text-foreground font-medium">CSP Navigator</span>
@@ -193,7 +308,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
         </div>
 
         <p className="text-xs text-muted-foreground">
-          {farm.state} &middot; {farm.total_acres.toLocaleString()} total
+          {farmState} &middot; {farmAcres.toLocaleString()} total
           acres &middot; FY{eligibility.fiscal_year}
         </p>
       </div>
@@ -216,7 +331,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
         >
           <CSPEligibilityCard
             eligibility={eligibility}
-            farmId={farm.id}
+            farmId={farmId}
             showDetailLink
           />
         </Suspense>
@@ -244,7 +359,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
         >
           <CSPScoreGauge score={score} showBreakdown={false} />
         </Suspense>
-        <Link href={`/csp/eligibility?farm_id=${farm.id}`}>
+        <Link href={`/csp/eligibility?farm_id=${farmId}`}>
           <Button
             variant="outline"
             size="sm"
@@ -272,7 +387,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
           <CSPPaymentSummary payment={payment} compact />
         </Suspense>
         <div className="mt-3">
-          <Link href={`/csp/payment?farm_id=${farm.id}`}>
+          <Link href={`/csp/payment?farm_id=${farmId}`}>
             <Button
               variant="outline"
               size="sm"
@@ -320,7 +435,7 @@ export default async function CspPage({ searchParams }: CspPageProps) {
         >
           What do you need to do next?
         </h2>
-        <QuickActions farmId={farm.id} />
+        <QuickActions farmId={farmId} />
       </section>
 
       {/* NRCS external link */}

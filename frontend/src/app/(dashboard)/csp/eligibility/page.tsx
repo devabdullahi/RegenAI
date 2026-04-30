@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import {
   CheckCircle2,
   Circle,
   Info,
   RefreshCw,
   ExternalLink,
+  AlertCircle,
+  ShieldCheck,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,11 +16,10 @@ import { CSPEligibilityBadge } from "@/components/csp/csp-eligibility-card";
 import { CSPScoreGauge } from "@/components/csp/csp-score-gauge";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { mockFarms } from "@/lib/mocks/farms";
-import { mockCSPEligibility, mockCSPScore } from "@/lib/mocks/csp";
+import { api } from "@/lib/api/client";
 
 import type { Metadata } from "next";
-import type { CSPResourceConcernResult } from "@/lib/api/types";
+import type { CSPResourceConcernResult, CSPEligibility, CSPScore } from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "CSP Eligibility — RegenAI",
@@ -27,6 +27,47 @@ export const metadata: Metadata = {
 
 interface EligibilityPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}
+
+// ── Derive CSPScore from eligibility (no dedicated score endpoint) ─────────────
+
+function deriveScore(eligibility: CSPEligibility): CSPScore {
+  const s = eligibility.stewardship_score;
+  const score_label: CSPScore["score_label"] =
+    s >= 80 ? "Excellent" : s >= 60 ? "Good" : s >= 40 ? "Fair" : "Needs Work";
+  const percentile_estimate: CSPScore["percentile_estimate"] =
+    s >= 80
+      ? "top 10%"
+      : s >= 65
+        ? "top 25%"
+        : s >= 50
+          ? "competitive"
+          : "below average";
+
+  const score_breakdown = eligibility.resource_concerns_met.map((rc) => ({
+    resource_concern: rc.name,
+    code: rc.code,
+    points_earned: rc.points_earned,
+    max_points:
+      rc.score > 0
+        ? Math.round(rc.points_earned / (rc.score / 100))
+        : rc.points_earned,
+    score: rc.score,
+    currently_met: rc.currently_met,
+  }));
+
+  return {
+    farm_id: eligibility.farm_id,
+    stewardship_score: s,
+    score_label,
+    percentile_estimate,
+    base_score: s,
+    bonus_points: Math.max(0, eligibility.estimated_ranking_score - s),
+    score_breakdown,
+    improvement_recommendations: eligibility.missing_requirements,
+    from_cache: eligibility.from_cache,
+    evaluated_at: eligibility.evaluated_at,
+  };
 }
 
 // ── Resource concern detail card ──────────────────────────────────────────────
@@ -228,24 +269,80 @@ function EligibilityTimeline({
   );
 }
 
+// ── Error / no-farm states ────────────────────────────────────────────────────
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50">
+        <AlertCircle className="h-7 w-7 text-red-500" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Unable to load eligibility data
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
+      </div>
+      <Link href="/farms">
+        <Button variant="outline" className="min-h-[48px]">
+          Back to farms
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+function NoFarmSelected() {
+  return (
+    <div className="flex flex-col items-center gap-4 py-16 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
+        <ShieldCheck className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
+      </div>
+      <div>
+        <h2 className="font-heading text-lg font-semibold text-foreground">
+          Select a farm first
+        </h2>
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+          Choose a farm to view CSP eligibility details.
+        </p>
+      </div>
+      <Link href="/farms">
+        <Button className="min-h-[48px]">Go to My Farms</Button>
+      </Link>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default async function CspEligibilityPage({
   searchParams,
 }: EligibilityPageProps) {
   const params = await searchParams;
-  const farmIdParam =
+  const farmId =
     typeof params.farm_id === "string" ? params.farm_id : undefined;
 
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
-    redirect("/farms");
+  if (!farmId) {
+    return <NoFarmSelected />;
   }
 
-  const eligibility = mockCSPEligibility;
-  const score = mockCSPScore;
+  let eligibility: CSPEligibility;
+  let farmName: string;
+
+  try {
+    const [elig, farm] = await Promise.all([
+      api.csp.getEligibility(farmId),
+      api.farms.get(farmId),
+    ]);
+    eligibility = elig;
+    farmName = farm.name;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "An unexpected error occurred.";
+    return <ErrorState message={message} />;
+  }
+
+  const score = deriveScore(eligibility);
   const hasCommitment = eligibility.rc_count_will_meet > 0;
   const hasEnhancements = eligibility.active_enhancement_codes.length > 0;
 
@@ -255,11 +352,11 @@ export default async function CspEligibilityPage({
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <Link href="/farms" className="hover:text-foreground transition-colors">
-            {farm.name}
+            {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farm.id}`}
+            href={`/csp?farm_id=${farmId}`}
             className="hover:text-foreground transition-colors"
           >
             CSP Navigator
@@ -280,7 +377,7 @@ export default async function CspEligibilityPage({
 
       {/* Summary banner */}
       <Card
-        className={`border-2 ${eligibility.eligibility_status === "eligible" ? "border-green-300 bg-green-50" : eligibility.eligibility_status === "conditional" ? "border-amber-300 bg-amber-50" : "border-red-200 bg-red-50"}`}
+        className={`border-2 ${eligibility.eligibility_status === "eligible" ? "border-green-300 bg-green-50" : eligibility.eligibility_status === "act_now" ? "border-amber-300 bg-amber-50" : "border-red-200 bg-red-50"}`}
       >
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -367,7 +464,7 @@ export default async function CspEligibilityPage({
         rcCount={eligibility.rc_count_above_threshold}
         hasCommitment={hasCommitment}
         hasEnhancements={hasEnhancements}
-        farmId={farm.id}
+        farmId={farmId}
       />
 
       {/* Re-evaluate button */}
@@ -384,19 +481,27 @@ export default async function CspEligibilityPage({
             })}
           </p>
           <p className="text-xs text-muted-foreground">
-            Eligibility is recalculated automatically when your farm data
-            changes.
+            {eligibility.from_cache
+              ? "Showing cached results. Re-evaluate to refresh."
+              : "Eligibility is recalculated automatically when your farm data changes."}
           </p>
         </div>
-        <Button
-          variant="outline"
-          className="min-h-[48px] cursor-pointer"
-          disabled
-          aria-label="Re-evaluate eligibility (coming with live API)"
+        <form
+          action={async () => {
+            "use server";
+            await api.csp.evaluate(farmId);
+          }}
         >
-          <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-          Re-evaluate
-        </Button>
+          <Button
+            type="submit"
+            variant="outline"
+            className="min-h-[48px] cursor-pointer"
+            aria-label="Re-evaluate CSP eligibility"
+          >
+            <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
+            Re-evaluate
+          </Button>
+        </form>
       </div>
 
       {/* Disclaimer */}

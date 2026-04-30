@@ -1,8 +1,9 @@
 from datetime import date, datetime
 from enum import Enum
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # --- Enums ---
@@ -40,14 +41,22 @@ class Goals(str, Enum):
 
 class FarmCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    state: str = Field(..., min_length=2, max_length=50)
-    county_fips: str = Field(..., min_length=4, max_length=10)
+    state: str = Field(..., pattern=r"^[A-Z]{2}$")
+    county_fips: str = Field(..., pattern=r"^\d{5}$")
     total_acres: float = Field(..., gt=0)
     goals: Goals | None = None
 
 
+class FarmUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    state: str | None = Field(None, pattern=r"^[A-Z]{2}$")
+    county_fips: str | None = Field(None, pattern=r"^\d{5}$")
+    total_acres: float | None = Field(None, gt=0)
+    goals: Goals | None = None
+
+
 class FarmResponse(BaseModel):
-    id: str
+    id: UUID
     user_id: str
     name: str
     state: str
@@ -59,6 +68,33 @@ class FarmResponse(BaseModel):
 
 # --- Field ---
 
+_VALID_GEOJSON_TYPES = frozenset(
+    ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString",
+     "MultiPolygon", "GeometryCollection", "Feature", "FeatureCollection")
+)
+_GEOMETRY_TYPES_REQUIRING_COORDINATES = frozenset(
+    ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon")
+)
+
+
+def _validate_boundary_geojson(value: Any) -> Any:
+    """Shared structural validator for GeoJSON boundary fields."""
+    if value is None:
+        return value
+    if not isinstance(value, dict):
+        raise ValueError("Invalid boundary geometry: must be valid GeoJSON")
+    geo_type = value.get("type")
+    if geo_type not in _VALID_GEOJSON_TYPES:
+        raise ValueError(
+            "Invalid boundary geometry: must be valid GeoJSON"
+        )
+    if geo_type in _GEOMETRY_TYPES_REQUIRING_COORDINATES and "coordinates" not in value:
+        raise ValueError(
+            "Invalid boundary geometry: must be valid GeoJSON"
+        )
+    return value
+
+
 class FieldCreate(BaseModel):
     farm_id: str
     name: str = Field(..., min_length=1, max_length=200)
@@ -67,6 +103,25 @@ class FieldCreate(BaseModel):
     boundary_geojson: dict | None = None
     boundary_description: str | None = None
     practices: list[str] = Field(default_factory=list)
+
+    @field_validator("boundary_geojson", mode="before")
+    @classmethod
+    def validate_boundary_geojson(cls, value: Any) -> Any:
+        return _validate_boundary_geojson(value)
+
+
+class FieldUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    acres: float | None = Field(None, gt=0)
+    crop_type: str | None = Field(None, min_length=1, max_length=100)
+    boundary_geojson: dict | None = None
+    boundary_description: str | None = None
+    practices: list[str] | None = None
+
+    @field_validator("boundary_geojson", mode="before")
+    @classmethod
+    def validate_boundary_geojson(cls, value: Any) -> Any:
+        return _validate_boundary_geojson(value)
 
 
 class FieldResponse(BaseModel):
@@ -79,6 +134,7 @@ class FieldResponse(BaseModel):
     boundary_description: str | None = None
     practices: list[str] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime | None = None
 
 
 # --- Soil Profile ---
@@ -127,13 +183,85 @@ class RecommendationStatusUpdate(BaseModel):
 # --- Credit Eligibility ---
 
 class CreditEligibilityResponse(BaseModel):
+    """Single stored credit eligibility record from the credit_eligibility table."""
+
     id: str
-    farm_id: str
+    farm_id: UUID
     program: CreditProgram
     status: CreditStatus
     practices_documented: list[str]
     notes: str
     updated_at: datetime
+
+
+class CreditEligibilityGetResponse(BaseModel):
+    """Response shape for GET /credits/ — latest EQIP and VCM records for a farm."""
+
+    farm_id: UUID
+    eqip: CreditEligibilityResponse | None = None
+    vcm: CreditEligibilityResponse | None = None
+
+
+class EvaluatedProgramResult(BaseModel):
+    """Per-program result produced by a fresh evaluation run."""
+
+    program: str
+    eligibility_status: CreditStatus | None = None
+    practices_documented: list[str] = Field(default_factory=list)
+    notes: str = ""
+    updated_at: datetime | None = None
+    # VCM-specific optional fields
+    program_name: str | None = None
+    estimated_total_credits: float | None = None
+    field_breakdown: list[dict] = Field(default_factory=list)
+
+
+class CreditEvaluateResponse(BaseModel):
+    """Response shape for POST /credits/evaluate."""
+
+    status: str
+    farm_id: UUID
+    eqip: EvaluatedProgramResult
+    vcm: EvaluatedProgramResult
+
+
+class CreditReportFarm(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    state: str | None = None
+    county_fips: str | None = None
+    total_acres: float | None = None
+    goals: Goals | None = None
+
+
+class CreditReportField(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    acres: float | None = None
+    crop_type: str | None = None
+    practices: list[str] = Field(default_factory=list)
+
+
+class CreditReportProgram(BaseModel):
+    status: CreditStatus | None = None
+    notes: str = ""
+    practices_documented: list[str] = Field(default_factory=list)
+    updated_at: datetime | None = None
+    # VCM-specific optional fields
+    program_name: str | None = None
+    estimated_total_credits: float | None = None
+    field_breakdown: list[dict] = Field(default_factory=list)
+
+
+class CreditReportResponse(BaseModel):
+    """Response shape for GET /credits/report."""
+
+    report_type: str
+    generated_at: str
+    farm: CreditReportFarm
+    fields: list[CreditReportField]
+    eqip: CreditReportProgram
+    vcm: CreditReportProgram
 
 
 # --- CSP Navigator ---
@@ -460,3 +588,35 @@ class APHResponse(BaseModel):
     years_used: int
     year_range: str
     records: list[YieldHistoryResponse]
+
+
+# ---------------------------------------------------------------------------
+# Documents
+# ---------------------------------------------------------------------------
+
+class DocumentType(str, Enum):
+    soil_report = "soil_report"
+    field_photo = "field_photo"
+    compliance = "compliance"
+
+
+class DocumentCreate(BaseModel):
+    """Metadata submitted alongside a multipart file upload."""
+
+    farm_id: str
+    doc_type: DocumentType
+    description: str | None = Field(None, max_length=500)
+
+
+class DocumentResponse(BaseModel):
+    """Document record returned from the API."""
+
+    id: str
+    farm_id: str
+    user_id: str
+    doc_type: DocumentType
+    file_name: str
+    storage_path: str
+    size_bytes: int
+    description: str | None = None
+    created_at: datetime

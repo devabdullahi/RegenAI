@@ -11,7 +11,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2, Sprout, X } from "lucide-react";
 import type { Recommendation } from "@/lib/api/types";
 
 function PriorityBadge({ priority }: { priority: Recommendation["priority"] }) {
@@ -161,21 +161,22 @@ export function RecommendationsEmpty() {
     <Card className="py-10 text-center">
       <CardContent className="flex flex-col items-center gap-3">
         <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
-          <div className="h-8 w-8 animate-pulse rounded-full bg-muted-foreground/20" />
+          <Sprout className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
         </div>
         <div>
           <p className="font-heading text-base font-semibold">
-            Your analysis is running
+            No recommendations yet
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Check back soon — recommendations will appear here.
+            Log a field activity to get personalized recommendations
           </p>
         </div>
-        <div className="mt-2 flex w-full max-w-xs flex-col gap-2">
-          <Skeleton className="h-3 w-full" />
-          <Skeleton className="h-3 w-4/5 self-center" />
-          <Skeleton className="h-3 w-3/5 self-center" />
-        </div>
+        <a
+          href="/activities/new"
+          className="mt-2 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Log an activity
+        </a>
       </CardContent>
     </Card>
   );

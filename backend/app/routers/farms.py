@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
-from app.models.schemas import FarmCreate, FarmResponse
+from app.models.schemas import FarmCreate, FarmUpdate, FarmResponse
 
 router = APIRouter(prefix="/farms", tags=["Farms"])
 
@@ -44,8 +45,9 @@ async def get_farm(
     supabase=Depends(get_authenticated_client),
 ):
     """Get a single farm by ID. RLS ensures user can only access their own."""
-    result = supabase.table("farms").select("*").eq("id", farm_id).single().execute()
-    if not result.data:
+    try:
+        result = supabase.table("farms").select("*").eq("id", farm_id).single().execute()
+    except APIError:
         raise HTTPException(status_code=404, detail="Farm not found")
     return result.data
 
@@ -53,18 +55,16 @@ async def get_farm(
 @router.patch("/{farm_id}", response_model=FarmResponse)
 async def update_farm(
     farm_id: str,
-    farm: FarmCreate,
+    farm: FarmUpdate,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
-    """Update farm details."""
-    data = {
-        "name": farm.name,
-        "state": farm.state,
-        "county_fips": farm.county_fips,
-        "total_acres": farm.total_acres,
-        "goals": farm.goals.value if farm.goals else None,
-    }
+    """Partially update farm details. Only provided fields are updated."""
+    data = farm.model_dump(exclude_none=True)
+    if "goals" in data and data["goals"] is not None:
+        data["goals"] = data["goals"].value if hasattr(data["goals"], "value") else data["goals"]
+    if not data:
+        raise HTTPException(status_code=400, detail="No fields to update")
     result = supabase.table("farms").update(data).eq("id", farm_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Farm not found")
@@ -78,4 +78,8 @@ async def delete_farm(
     supabase=Depends(get_authenticated_client),
 ):
     """Delete a farm. RLS ensures user can only delete their own."""
+    try:
+        supabase.table("farms").select("id").eq("id", farm_id).single().execute()
+    except APIError:
+        raise HTTPException(status_code=404, detail="Farm not found")
     supabase.table("farms").delete().eq("id", farm_id).execute()
