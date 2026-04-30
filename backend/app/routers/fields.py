@@ -1,9 +1,10 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
+from app.main import limiter
 from app.models.schemas import FieldCreate, FieldUpdate, FieldResponse, SoilProfileResponse, WeatherResponse
 from app.services.enrichment import run_enrichment
 
@@ -19,18 +20,24 @@ async def list_fields(
     supabase=Depends(get_authenticated_client),
 ):
     """List all fields for a farm. RLS ensures data isolation."""
-    result = (
-        supabase.table("fields")
-        .select("*")
-        .eq("farm_id", farm_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    try:
+        result = (
+            supabase.table("fields")
+            .select("*")
+            .eq("farm_id", farm_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to list fields: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list fields")
 
 
 @router.post("/", response_model=FieldResponse, status_code=201)
+@limiter.limit("30/hour")
 async def create_field(
+    request: Request,
     field: FieldCreate,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
@@ -45,10 +52,16 @@ async def create_field(
         "boundary_description": field.boundary_description,
         "practices": field.practices,
     }
-    result = supabase.table("fields").insert(data).execute()
-    if not result.data:
+    try:
+        result = supabase.table("fields").insert(data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create field")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create field: {e}")
         raise HTTPException(status_code=500, detail="Failed to create field")
-    return result.data[0]
 
 
 @router.get("/{field_id}", response_model=FieldResponse)

@@ -21,9 +21,10 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from app.auth.middleware import get_authenticated_client, get_current_user
+from app.main import limiter
 from app.models.schemas import DocumentCreate, DocumentResponse, DocumentType
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,9 @@ async def _assert_farm_ownership(farm_id: str, supabase) -> None:
 
 
 @router.post("/", response_model=DocumentResponse, status_code=201)
+@limiter.limit("20/hour")
 async def upload_document(
+    request: Request,
     farm_id: Annotated[str, Form(description="UUID of the farm this document belongs to")],
     doc_type: Annotated[DocumentType, Form(description="Document category")],
     file: Annotated[UploadFile, File(description="File to upload (max 10 MB)")],

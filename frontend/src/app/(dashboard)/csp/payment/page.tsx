@@ -1,20 +1,86 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Info, ChevronRight } from "lucide-react";
+import { Info, ChevronRight, AlertCircle } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 import { CSPPaymentSummary } from "@/components/csp/csp-payment-summary";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { mockFarms } from "@/lib/mocks/farms";
-import { mockCSPPayment, mockCSPEligibility } from "@/lib/mocks/csp";
+import { api } from "@/lib/api/client";
+import type { CSPEligibility, CSPPaymentEstimate } from "@/lib/api/types";
 
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "CSP Payment Estimate — RegenAI",
 };
+
+// ── Derive a CSPPaymentEstimate from the eligibility response ─────────────────
+// The backend exposes payment figures directly on the eligibility object.
+// There is no separate /csp/payment endpoint, so we project from eligibility.
+
+function derivePayment(eligibility: CSPEligibility): CSPPaymentEstimate {
+  const annual = eligibility.estimated_annual_payment ?? 0;
+  return {
+    farm_id: eligibility.farm_id,
+    state_code: "IA",
+    fiscal_year: eligibility.fiscal_year,
+    total_cropland_acres: 0,
+    rc_count_above_threshold: eligibility.rc_count_above_threshold,
+    eap_annual: annual,
+    enap_annual: 0,
+    raw_annual: annual,
+    capped_annual: annual,
+    contract_5yr_total: eligibility.estimated_5yr_payment ?? annual * 5,
+    per_acre_annual: 0,
+    min_applied: false,
+    max_applied: false,
+    enhancement_breakdown: [],
+    disclaimer:
+      "This is an estimate based on NRCS payment schedules and may differ from the final payment determined by your local NRCS office. Contact your NRCS service center to get an official payment estimate before applying.",
+  };
+}
+
+// ── Error state ───────────────────────────────────────────────────────────────
+
+function PaymentError({ message }: { message: string }) {
+  return (
+    <div className="pb-20 sm:pb-0">
+      <div className="mb-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground">
+          Payment Estimate
+        </h1>
+      </div>
+      <Card className="py-12 text-center">
+        <CardContent className="flex flex-col items-center gap-5">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
+            <AlertCircle
+              className="h-8 w-8 text-destructive"
+              aria-hidden="true"
+            />
+          </div>
+          <div className="max-w-sm">
+            <h2 className="font-heading text-lg font-semibold text-foreground">
+              Could not load payment data
+            </h2>
+            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+              {message}
+            </p>
+          </div>
+          <Link href="/farms">
+            <Button variant="outline" className="min-h-[48px] cursor-pointer">
+              Back to farms
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 interface PaymentPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -24,18 +90,30 @@ export default async function CspPaymentPage({
   searchParams,
 }: PaymentPageProps) {
   const params = await searchParams;
-  const farmIdParam =
+  const farmId =
     typeof params.farm_id === "string" ? params.farm_id : undefined;
 
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
+  if (!farmId) {
     redirect("/farms");
   }
 
-  const payment = mockCSPPayment;
-  const eligibility = mockCSPEligibility;
+  let farmName: string;
+  let eligibility: CSPEligibility;
+
+  try {
+    const [farm, cspEligibility] = await Promise.all([
+      api.farms.get(farmId),
+      api.csp.getEligibility(farmId),
+    ]);
+    farmName = farm.name;
+    eligibility = cspEligibility;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load payment data.";
+    return <PaymentError message={message} />;
+  }
+
+  const payment = derivePayment(eligibility);
 
   return (
     <div className="pb-20 sm:pb-0 space-y-8">
@@ -43,11 +121,11 @@ export default async function CspPaymentPage({
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <Link href="/farms" className="hover:text-foreground transition-colors">
-            {farm.name}
+            {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farm.id}`}
+            href={`/csp?farm_id=${farmId}`}
             className="hover:text-foreground transition-colors"
           >
             CSP Navigator
@@ -96,7 +174,7 @@ export default async function CspPaymentPage({
             and your application score.
           </p>
         </div>
-        <Link href={`/csp/enhancements?farm_id=${farm.id}`}>
+        <Link href={`/csp/enhancements?farm_id=${farmId}`}>
           <Button className="min-h-[48px] bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer">
             Browse More Enhancements
             <ChevronRight className="ml-1 h-4 w-4" aria-hidden="true" />

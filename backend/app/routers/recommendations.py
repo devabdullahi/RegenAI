@@ -21,14 +21,18 @@ async def list_recommendations(
     supabase=Depends(get_authenticated_client),
 ):
     """List recommendations for a field."""
-    result = (
-        supabase.table("recommendations")
-        .select("*")
-        .eq("field_id", field_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    try:
+        result = (
+            supabase.table("recommendations")
+            .select("*")
+            .eq("field_id", field_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to list recommendations: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list recommendations")
 
 
 @router.patch("/{recommendation_id}/status", response_model=RecommendationResponse)
@@ -39,15 +43,21 @@ async def update_recommendation_status(
     supabase=Depends(get_authenticated_client),
 ):
     """Update a recommendation's status (pending → acted/dismissed)."""
-    result = (
-        supabase.table("recommendations")
-        .update({"status": body.status.value})
-        .eq("id", recommendation_id)
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
-    return result.data[0]
+    try:
+        result = (
+            supabase.table("recommendations")
+            .update({"status": body.status.value})
+            .eq("id", recommendation_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update recommendation {recommendation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update recommendation")
 
 
 @router.post("/generate", status_code=202)
