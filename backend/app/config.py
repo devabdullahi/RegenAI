@@ -10,9 +10,6 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
 
-    # Database (direct connection for migrations)
-    database_url: str = ""
-
     # Claude API
     anthropic_api_key: str = ""
 

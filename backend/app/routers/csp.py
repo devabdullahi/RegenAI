@@ -16,9 +16,11 @@ CSP program summary:
     - CART score >= state ranking threshold → ACT NOW fast-track approval
 """
 
+import json
 import logging
 import re
 from datetime import date, timezone, datetime
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -36,62 +38,21 @@ router = APIRouter(prefix="/csp", tags=["CSP Navigator"])
 
 
 # ---------------------------------------------------------------------------
-# Application deadlines by state (quarterly batching schedule, FY2025)
+# Application deadlines loaded from external JSON config
 # ---------------------------------------------------------------------------
 
-_CSP_DEADLINES: dict[str, list[dict]] = {
-    "IL": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; NRCS batches applications quarterly."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; NRCS batches applications quarterly."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; NRCS batches applications quarterly."},
-    ],
-    "IN": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; check with local NRCS office."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; check with local NRCS office."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; check with local NRCS office."},
-    ],
-    "IA": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Iowa NRCS batches quarterly; highest-scoring applications funded first."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Iowa NRCS batches quarterly."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Iowa NRCS batches quarterly."},
-    ],
-    "KS": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Contact Kansas NRCS state office for county-specific ranking dates."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Contact Kansas NRCS state office."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Contact Kansas NRCS state office."},
-    ],
-    "MN": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Minnesota prioritizes operations with SWCD partnership plans."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Minnesota NRCS state office."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Minnesota NRCS state office."},
-    ],
-    "MO": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Missouri NRCS prioritizes water quality resource concerns in applicable watersheds."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Missouri NRCS."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Missouri NRCS."},
-    ],
-    "NE": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Nebraska often has competitive ranking pools; apply early."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Nebraska NRCS."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Nebraska NRCS."},
-    ],
-    "OH": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Ohio NRCS; H2Ohio watershed farms may receive ranking preference."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Ohio NRCS."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Ohio NRCS."},
-    ],
-    "WI": [
-        {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Wisconsin NRCS; dairy operations may qualify for additional enhancements."},
-        {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Wisconsin NRCS."},
-        {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Wisconsin NRCS."},
-    ],
-}
+_DEADLINES_PATH = Path(__file__).resolve().parent.parent / "data" / "csp_deadlines.json"
 
-_DEFAULT_DEADLINES: list[dict] = [
-    {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; contact your local NRCS service center for state-specific ranking dates."},
-    {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; contact your local NRCS service center."},
-    {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; contact your local NRCS service center."},
-]
+def _load_deadlines() -> tuple[dict[str, list[dict]], list[dict]]:
+    """Load CSP deadlines from JSON config file."""
+    try:
+        data = json.loads(_DEADLINES_PATH.read_text())
+        return data.get("states", {}), data.get("default", [])
+    except Exception:
+        logger.warning("Failed to load CSP deadlines from %s; using empty defaults", _DEADLINES_PATH)
+        return {}, []
+
+_CSP_DEADLINES, _DEFAULT_DEADLINES = _load_deadlines()
 
 
 # ---------------------------------------------------------------------------

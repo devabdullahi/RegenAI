@@ -30,8 +30,8 @@ async def list_recommendations(
             .execute()
         )
         return result.data or []
-    except Exception as e:
-        logger.error(f"Failed to list recommendations: {e}")
+    except APIError as e:
+        logger.error("Failed to list recommendations for field=%s: %s", field_id, e)
         raise HTTPException(status_code=500, detail="Failed to list recommendations")
 
 
@@ -55,8 +55,8 @@ async def update_recommendation_status(
         return result.data[0]
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Failed to update recommendation {recommendation_id}: {e}")
+    except APIError as e:
+        logger.error("Failed to update recommendation %s: %s", recommendation_id, e)
         raise HTTPException(status_code=500, detail="Failed to update recommendation")
 
 

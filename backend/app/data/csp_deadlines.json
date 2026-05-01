@@ -1,0 +1,55 @@
+{
+  "fiscal_year": "FY2025",
+  "states": {
+    "IL": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; NRCS batches applications quarterly."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; NRCS batches applications quarterly."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; NRCS batches applications quarterly."}
+    ],
+    "IN": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; check with local NRCS office."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; check with local NRCS office."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; check with local NRCS office."}
+    ],
+    "IA": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Iowa NRCS batches quarterly; highest-scoring applications funded first."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Iowa NRCS batches quarterly."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Iowa NRCS batches quarterly."}
+    ],
+    "KS": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Contact Kansas NRCS state office for county-specific ranking dates."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Contact Kansas NRCS state office."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Contact Kansas NRCS state office."}
+    ],
+    "MN": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Minnesota prioritizes operations with SWCD partnership plans."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Minnesota NRCS state office."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Minnesota NRCS state office."}
+    ],
+    "MO": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Missouri NRCS prioritizes water quality resource concerns in applicable watersheds."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Missouri NRCS."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Missouri NRCS."}
+    ],
+    "NE": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Nebraska often has competitive ranking pools; apply early."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Nebraska NRCS."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Nebraska NRCS."}
+    ],
+    "OH": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Ohio NRCS; H2Ohio watershed farms may receive ranking preference."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Ohio NRCS."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Ohio NRCS."}
+    ],
+    "WI": [
+      {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Wisconsin NRCS; dairy operations may qualify for additional enhancements."},
+      {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Wisconsin NRCS."},
+      {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Wisconsin NRCS."}
+    ]
+  },
+  "default": [
+    {"cutoff_date": "2025-05-15", "signup_period": "Spring 2025", "notes": "Continuous signup; contact your local NRCS service center for state-specific ranking dates."},
+    {"cutoff_date": "2025-08-15", "signup_period": "Summer 2025", "notes": "Continuous signup; contact your local NRCS service center."},
+    {"cutoff_date": "2025-11-14", "signup_period": "Fall 2025",   "notes": "Continuous signup; contact your local NRCS service center."}
+  ]
+}

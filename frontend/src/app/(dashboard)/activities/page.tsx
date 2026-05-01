@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ActivityCard } from "@/components/activities/activity-card";
 import { ActivityFilters } from "@/components/activities/activity-filters";
 import type { ActivityFiltersState } from "@/components/activities/activity-filters";
@@ -264,15 +265,15 @@ export default function ActivitiesPage() {
           </p>
         </div>
 
-        <Link href="/activities/new">
-          <button
-            type="button"
-            className="flex min-h-[52px] items-center gap-2 rounded-xl bg-accent px-5 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
+        <Button
+          asChild
+          className="flex min-h-[52px] items-center gap-2 rounded-xl bg-accent px-5 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Link href="/activities/new">
             <Plus className="h-5 w-5" aria-hidden="true" />
             Log Activity
-          </button>
-        </Link>
+          </Link>
+        </Button>
       </div>
 
       {/* Quick count strip — only shown when there are activities */}
@@ -401,15 +402,15 @@ export default function ActivitiesPage() {
         <p className="text-sm font-medium text-foreground mb-3">
           Something happen today on the farm?
         </p>
-        <Link href="/activities/new">
-          <button
-            type="button"
-            className="min-h-[52px] rounded-xl bg-primary px-8 py-3 text-base font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
+        <Button
+          asChild
+          className="min-h-[52px] rounded-xl bg-primary px-8 py-3 text-base font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Link href="/activities/new">
             <Plus className="mr-2 inline-block h-5 w-5 align-middle" aria-hidden="true" />
             Log an Activity
-          </button>
-        </Link>
+          </Link>
+        </Button>
       </div>
     </div>
   );
