@@ -6,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { EqipDetail } from "@/components/credits/eqip-detail";
 import { VcmDetail } from "@/components/credits/vcm-detail";
 import { DocumentUpload } from "@/components/credits/document-upload";
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 import type { Metadata } from "next";
 import type { Document, Farm, Field, CreditEligibility } from "@/lib/api/types";
 
@@ -96,7 +96,7 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
       <Separator />
 
       {/* Document upload */}
-      <DocumentUpload documents={documents} farmId={farm.id} />
+      <DocumentUpload initialDocuments={documents} farmId={farm.id} />
     </div>
   );
 }

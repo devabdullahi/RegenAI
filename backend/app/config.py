@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,35 +23,20 @@ class Settings(BaseSettings):
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    @field_validator("supabase_url")
-    @classmethod
-    def require_supabase_url(cls, v: str) -> str:
-        if not v:
-            raise ValueError("Missing mandatory secret: SUPABASE_URL must be set")
-        return v
-
-    @field_validator("supabase_anon_key")
-    @classmethod
-    def require_supabase_anon_key(cls, v: str) -> str:
-        if not v:
-            raise ValueError("Missing mandatory secret: SUPABASE_ANON_KEY must be set")
-        return v
-
-    @field_validator("supabase_service_role_key")
-    @classmethod
-    def require_supabase_service_role_key(cls, v: str) -> str:
-        if not v:
+    @model_validator(mode="after")
+    def require_mandatory_secrets(self) -> "Settings":
+        mandatory: dict[str, str] = {
+            "SUPABASE_URL": self.supabase_url,
+            "SUPABASE_ANON_KEY": self.supabase_anon_key,
+            "ANTHROPIC_API_KEY": self.anthropic_api_key,
+        }
+        missing = [name for name, value in mandatory.items() if not value]
+        if missing:
             raise ValueError(
-                "Missing mandatory secret: SUPABASE_SERVICE_ROLE_KEY must be set"
+                "Missing mandatory secrets — set the following environment variables: "
+                + ", ".join(missing)
             )
-        return v
-
-    @field_validator("anthropic_api_key")
-    @classmethod
-    def require_anthropic_api_key(cls, v: str) -> str:
-        if not v:
-            raise ValueError("Missing mandatory secret: ANTHROPIC_API_KEY must be set")
-        return v
+        return self
 
     @property
     def is_production(self) -> bool:

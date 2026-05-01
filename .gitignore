@@ -51,8 +51,7 @@ claude_output/
 **/CLAUDE.md
 **/AGENTS.md
 
-# Poetry lock (optional — remove this line if you want lock file tracked)
-# poetry.lock
+# poetry.lock is intentionally committed for reproducible Docker builds
 # Supabase temp
 supabase/.temp/
 supabase/.branches/

@@ -2,14 +2,45 @@
 
 import { useState, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Upload, FileText, ImageIcon, File, FolderOpen } from "lucide-react";
+import {
+  Upload,
+  FileText,
+  ImageIcon,
+  File,
+  FolderOpen,
+  Trash2,
+  Loader2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { api } from "@/lib/api/client";
 import type { Document } from "@/lib/api/types";
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const ACCEPTED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const ACCEPTED_EXTENSIONS = ".pdf,.jpg,.jpeg,.png";
 const ACCEPTED_LABEL = "PDF, JPG, or PNG";
+
+const DOC_TYPE_OPTIONS: Array<{
+  value: Document["doc_type"];
+  label: string;
+}> = [
+  { value: "soil_report", label: "Soil Report" },
+  { value: "field_photo", label: "Field Photo" },
+  { value: "compliance", label: "Compliance Document" },
+  { value: "other", label: "Other" },
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fileIcon(name: string) {
   const ext = name.split(".").pop()?.toLowerCase();
@@ -19,13 +50,9 @@ function fileIcon(name: string) {
 }
 
 function formatDocType(docType: Document["doc_type"]): string {
-  const map: Record<Document["doc_type"], string> = {
-    soil_report: "Soil Report",
-    field_photo: "Field Photo",
-    compliance: "Compliance Document",
-    other: "Other",
-  };
-  return map[docType] ?? "Document";
+  return (
+    DOC_TYPE_OPTIONS.find((o) => o.value === docType)?.label ?? "Document"
+  );
 }
 
 function formatDate(dateStr: string): string {
@@ -36,15 +63,35 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ── Props ─────────────────────────────────────────────────────────────────────
+
 interface DocumentUploadProps {
-  documents: Document[];
+  /** Server-fetched documents passed in as initial state. */
+  initialDocuments: Document[];
   farmId: string;
 }
 
-export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export function DocumentUpload({
+  initialDocuments,
+  farmId,
+}: DocumentUploadProps) {
+  const [docs, setDocs] = useState<Document[]>(initialDocuments);
   const [isDragging, setIsDragging] = useState(false);
   const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [docType, setDocType] = useState<Document["doc_type"]>("soil_report");
+  const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── Validation ──────────────────────────────────────────────────────────────
 
   const validateFile = useCallback((file: File): boolean => {
     if (!ACCEPTED_TYPES.includes(file.type)) {
@@ -53,7 +100,7 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
       });
       return false;
     }
-    if (file.size > 10 * 1024 * 1024) {
+    if (file.size > MAX_BYTES) {
       toast.error("File too large", {
         description: "Maximum file size is 10 MB.",
       });
@@ -70,6 +117,8 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
     },
     [validateFile]
   );
+
+  // ── Drag-and-drop ───────────────────────────────────────────────────────────
 
   function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
@@ -91,34 +140,71 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (file) stageFile(file);
-    // Reset input so the same file can be re-selected if cleared
+    // Reset so the same file can be re-selected after clearing
     e.target.value = "";
   }
 
-  function handleUpload() {
+  // ── Upload ──────────────────────────────────────────────────────────────────
+
+  async function handleUpload() {
     if (!stagedFile) {
       toast.info("No file selected", {
         description: "Drag a file into the box above or click to choose one.",
       });
       return;
     }
-    toast.info("Document upload coming soon", {
-      description:
-        "Supabase Storage integration is in progress. Your documents will sync automatically once enabled.",
-    });
-    setStagedFile(null);
+
+    setUploading(true);
+    try {
+      const uploaded = await api.documents.upload(farmId, stagedFile, docType);
+      setDocs((prev) => [uploaded, ...prev]);
+      setStagedFile(null);
+      toast.success("Document uploaded", {
+        description: `${stagedFile.name} was saved successfully.`,
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Upload failed. Please try again.";
+      toast.error("Upload failed", { description: message });
+    } finally {
+      setUploading(false);
+    }
   }
 
-  function handleClearStaged() {
-    setStagedFile(null);
+  // ── Delete ──────────────────────────────────────────────────────────────────
+
+  async function handleDelete(doc: Document) {
+    const fileName = doc.storage_path.split("/").pop() ?? doc.storage_path;
+    const confirmed = window.confirm(
+      `Delete "${fileName}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(doc.id);
+    try {
+      await api.documents.delete(doc.id);
+      setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      toast.success("Document deleted", { description: fileName });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Delete failed. Please try again.";
+      toast.error("Delete failed", { description: message });
+    } finally {
+      setDeletingId(null);
+    }
   }
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <section aria-labelledby="docs-heading" className="space-y-4">
       {/* Section header */}
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted">
-          <FolderOpen className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          <FolderOpen
+            className="h-5 w-5 text-muted-foreground"
+            aria-hidden="true"
+          />
         </div>
         <div>
           <h2
@@ -133,6 +219,7 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
         </div>
       </div>
 
+      {/* Upload card */}
       <Card>
         <CardHeader className="border-b">
           <CardTitle className="text-base">Upload a document</CardTitle>
@@ -143,11 +230,11 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
             role="button"
             tabIndex={0}
             aria-label="Drop zone: drag and drop a file here, or press Enter to choose a file"
-            onClick={() => inputRef.current?.click()}
+            onClick={() => !uploading && inputRef.current?.click()}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                inputRef.current?.click();
+                if (!uploading) inputRef.current?.click();
               }
             }}
             onDragOver={handleDragOver}
@@ -155,9 +242,11 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
             onDrop={handleDrop}
             className={[
               "flex min-h-[140px] cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-8 text-center transition-colors",
-              isDragging
-                ? "border-primary bg-primary/5"
-                : "border-border bg-muted/30 hover:border-primary/50 hover:bg-muted/50",
+              uploading
+                ? "pointer-events-none opacity-60 border-border bg-muted/30"
+                : isDragging
+                  ? "border-primary bg-primary/5"
+                  : "border-border bg-muted/30 hover:border-primary/50 hover:bg-muted/50",
             ].join(" ")}
           >
             <div
@@ -188,6 +277,7 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
               className="sr-only"
               aria-hidden="true"
               tabIndex={-1}
+              disabled={uploading}
             />
           </div>
 
@@ -208,15 +298,16 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
                   {stagedFile.name}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {(stagedFile.size / 1024).toFixed(0)} KB — ready to upload
+                  {formatBytes(stagedFile.size)} &mdash; ready to upload
                 </p>
               </div>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleClearStaged();
+                  setStagedFile(null);
                 }}
-                className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
+                disabled={uploading}
+                className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center disabled:opacity-40"
                 aria-label={`Remove ${stagedFile.name}`}
               >
                 &times;
@@ -224,14 +315,52 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
             </div>
           )}
 
+          {/* Document type selector */}
+          <div className="space-y-1.5">
+            <label
+              htmlFor="doc-type-select"
+              className="text-sm font-medium text-foreground"
+            >
+              Document type
+            </label>
+            <Select
+              value={docType}
+              onValueChange={(v) => setDocType(v as Document["doc_type"])}
+              disabled={uploading}
+            >
+              <SelectTrigger id="doc-type-select" className="w-full">
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent>
+                {DOC_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* Upload button */}
           <Button
             onClick={handleUpload}
-            disabled={!stagedFile}
+            disabled={!stagedFile || uploading}
             className="w-full min-h-[48px] bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-50 cursor-pointer font-semibold"
           >
-            <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
-            Upload Document
+            {uploading ? (
+              <>
+                <Loader2
+                  className="mr-2 h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
+                Uploading...
+              </>
+            ) : (
+              <>
+                <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
+                Upload Document
+              </>
+            )}
           </Button>
         </CardContent>
       </Card>
@@ -241,15 +370,15 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
         <CardHeader className="border-b">
           <CardTitle className="text-base">
             Uploaded documents
-            {documents.length > 0 && (
+            {docs.length > 0 && (
               <span className="ml-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-                {documents.length}
+                {docs.length}
               </span>
             )}
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {documents.length === 0 ? (
+          {docs.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-8 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                 <FolderOpen
@@ -266,13 +395,12 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
               </p>
             </div>
           ) : (
-            <ul
-              aria-label="Uploaded documents"
-              className="divide-y divide-border"
-            >
-              {documents.map((doc) => {
-                const fileName = doc.storage_path.split("/").pop() ?? doc.storage_path;
+            <ul aria-label="Uploaded documents" className="divide-y divide-border">
+              {docs.map((doc) => {
+                const fileName =
+                  doc.storage_path.split("/").pop() ?? doc.storage_path;
                 const Icon = fileIcon(fileName);
+                const isDeleting = deletingId === doc.id;
                 return (
                   <li
                     key={doc.id}
@@ -291,6 +419,21 @@ export function DocumentUpload({ documents, farmId }: DocumentUploadProps) {
                         {formatDate(doc.uploaded_at)}
                       </p>
                     </div>
+                    <button
+                      onClick={() => handleDelete(doc)}
+                      disabled={isDeleting || uploading}
+                      className="shrink-0 rounded p-1.5 text-muted-foreground hover:text-destructive transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center disabled:opacity-40"
+                      aria-label={`Delete ${fileName}`}
+                    >
+                      {isDeleting ? (
+                        <Loader2
+                          className="h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      )}
+                    </button>
                   </li>
                 );
               })}

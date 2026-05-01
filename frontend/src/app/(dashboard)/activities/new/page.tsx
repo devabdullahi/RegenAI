@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { ActivityForm } from "@/components/activities/activity-form";
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 import type { Field } from "@/lib/api/types";
 import type { Metadata } from "next";
 import type { ActivityType } from "@/lib/api/types";

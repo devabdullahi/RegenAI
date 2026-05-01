@@ -20,7 +20,7 @@ function CompactBadge({ status }: { status: CSPEligibilityStatus }) {
       </span>
     );
   }
-  if (status === "conditional") {
+  if (status === "act_now") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
         <AlertTriangle className="h-3 w-3" aria-hidden="true" />

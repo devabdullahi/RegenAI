@@ -1,10 +1,11 @@
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
-from app.main import limiter
+from app.rate_limit import limiter
 from app.models.schemas import FieldCreate, FieldUpdate, FieldResponse, SoilProfileResponse, WeatherResponse
 from app.services.enrichment import run_enrichment
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/fields", tags=["Fields"])
 
 @router.get("/", response_model=list[FieldResponse])
 async def list_fields(
-    farm_id: str,
+    farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -66,7 +67,7 @@ async def create_field(
 
 @router.get("/{field_id}", response_model=FieldResponse)
 async def get_field(
-    field_id: str,
+    field_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -80,7 +81,7 @@ async def get_field(
 
 @router.patch("/{field_id}", response_model=FieldResponse)
 async def update_field(
-    field_id: str,
+    field_id: UUID,
     field: FieldUpdate,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
@@ -103,8 +104,10 @@ async def update_field(
 
 
 @router.delete("/{field_id}", status_code=204)
+@limiter.limit("30/hour")
 async def delete_field(
-    field_id: str,
+    request: Request,
+    field_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -115,12 +118,16 @@ async def delete_field(
         supabase.table("fields").select("id").eq("id", field_id).single().execute()
     except APIError:
         raise HTTPException(status_code=404, detail="Field not found")
-    supabase.table("fields").delete().eq("id", field_id).execute()
+    try:
+        supabase.table("fields").delete().eq("id", field_id).execute()
+    except Exception as e:
+        logger.error(f"Failed to delete field {field_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete field")
 
 
 @router.get("/{field_id}/soil", response_model=SoilProfileResponse | None)
 async def get_soil_profile(
-    field_id: str,
+    field_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -138,7 +145,7 @@ async def get_soil_profile(
 
 @router.get("/{field_id}/weather", response_model=list[WeatherResponse])
 async def get_weather(
-    field_id: str,
+    field_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -156,7 +163,7 @@ async def get_weather(
 
 @router.post("/{field_id}/enrich", status_code=202)
 async def enrich_field(
-    field_id: str,
+    field_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):

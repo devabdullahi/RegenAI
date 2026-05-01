@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -168,15 +169,14 @@ export function RecommendationsEmpty() {
             No recommendations yet
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Log a field activity to get personalized recommendations
+            Add a field activity to get personalized recommendations.
           </p>
         </div>
-        <a
-          href="/activities/new"
-          className="mt-2 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          Log an activity
-        </a>
+        <Link href="/activities/new" className="mt-2">
+          <Button className="min-h-[48px] cursor-pointer">
+            Add field activity
+          </Button>
+        </Link>
       </CardContent>
     </Card>
   );

@@ -20,7 +20,7 @@ import { CSPPaymentSummary } from "@/components/csp/csp-payment-summary";
 import { CSPResourceConcerns } from "@/components/csp/csp-resource-concerns";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 
 import type { Metadata } from "next";
 import type { CSPEligibility, CSPScore, CSPPaymentEstimate } from "@/lib/api/types";

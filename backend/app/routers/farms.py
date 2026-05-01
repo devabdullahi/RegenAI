@@ -1,10 +1,11 @@
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
-from app.main import limiter
+from app.rate_limit import limiter
 from app.models.schemas import FarmCreate, FarmUpdate, FarmResponse
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ async def create_farm(
 
 @router.get("/{farm_id}", response_model=FarmResponse)
 async def get_farm(
-    farm_id: str,
+    farm_id: UUID,
     _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
@@ -71,13 +72,13 @@ async def get_farm(
 
 @router.patch("/{farm_id}", response_model=FarmResponse)
 async def update_farm(
-    farm_id: str,
+    farm_id: UUID,
     farm: FarmUpdate,
     _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Partially update farm details. Only provided fields are updated."""
-    data = farm.model_dump(exclude_none=True)
+    data = farm.model_dump(exclude_unset=True)
     if "goals" in data and data["goals"] is not None:
         data["goals"] = data["goals"].value if hasattr(data["goals"], "value") else data["goals"]
     if not data:
@@ -90,7 +91,7 @@ async def update_farm(
 
 @router.delete("/{farm_id}", status_code=204)
 async def delete_farm(
-    farm_id: str,
+    farm_id: UUID,
     _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):

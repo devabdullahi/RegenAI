@@ -2,9 +2,8 @@ import logging
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from supabase import create_client
 
-from app.config import settings
+from app.auth.middleware import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +17,11 @@ async def health_check():
     healthy = True
 
     try:
-        client = create_client(settings.supabase_url, settings.supabase_anon_key)
+        # Reuse the process-level cached anon client — no new connections needed
+        # for a health probe.  The anon client has public read access to the
+        # eqip_practices reference table which is sufficient to confirm that
+        # the Supabase PostgREST endpoint is reachable.
+        client = get_supabase_client()
         client.table("eqip_practices").select("code").limit(1).execute()
         checks["supabase"] = "ok"
     except Exception:

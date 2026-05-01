@@ -13,6 +13,7 @@ import { ActivityTypePicker } from "./activity-type-picker";
 import { RestrictedUseBadge } from "./restricted-use-badge";
 import { useState } from "react";
 import type { ActivityType, Field } from "@/lib/api/types";
+import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
 // ── Zod schemas per activity type ─────────────────────────────────────────────
@@ -46,7 +47,15 @@ const spraySchema = commonSchema.extend({
   restricted_use: z.boolean(),
   applicator_name: z.string().optional(),
   applicator_cert_number: z.string().optional(),
-});
+}).refine(
+  (data) => {
+    if (data.restricted_use) {
+      return !!data.applicator_name && !!data.applicator_cert_number;
+    }
+    return true;
+  },
+  { message: "Applicator info required for restricted-use products", path: ["applicator_name"] }
+);
 
 const fertilizeSchema = commonSchema.extend({
   activity_type: z.literal("fertilize"),
@@ -90,7 +99,7 @@ type AnyFormValues =
 
 // ── Shared form field wrapper ──────────────────────────────────────────────────
 
-function Field({
+function FormField({
   label,
   htmlFor,
   error,
@@ -137,16 +146,16 @@ function PlantFields({
 }) {
   return (
     <>
-      <Field label="Seed Variety" htmlFor="variety" required error={errors.variety?.message}>
+      <FormField label="Seed Variety" htmlFor="variety" required error={errors.variety?.message}>
         <Input
           id="variety"
           placeholder="e.g. DeKalb DKC52-70RIB"
           className="h-12 text-base"
           {...register("variety")}
         />
-      </Field>
+      </FormField>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Field
+        <FormField
           label="Seeding Rate (K/ac)"
           htmlFor="seeding_rate_kac"
           required
@@ -161,8 +170,8 @@ function PlantFields({
             className="h-12 text-base"
             {...register("seeding_rate_kac")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label='Row Spacing (inches)'
           htmlFor="row_spacing_in"
           required
@@ -175,8 +184,8 @@ function PlantFields({
             className="h-12 text-base"
             {...register("row_spacing_in")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Planting Depth (inches)"
           htmlFor="depth_in"
           required
@@ -190,7 +199,7 @@ function PlantFields({
             className="h-12 text-base"
             {...register("depth_in")}
           />
-        </Field>
+        </FormField>
       </div>
     </>
   );
@@ -211,7 +220,7 @@ function SprayFields({
 
   return (
     <>
-      <Field
+      <FormField
         label="Product Name"
         htmlFor="product_name"
         required
@@ -223,9 +232,9 @@ function SprayFields({
           className="h-12 text-base"
           {...register("product_name")}
         />
-      </Field>
+      </FormField>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field
+        <FormField
           label="EPA Registration Number"
           htmlFor="epa_reg_number"
           required
@@ -238,8 +247,8 @@ function SprayFields({
             className="h-12 text-base"
             {...register("epa_reg_number")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Application Rate (oz/ac)"
           htmlFor="rate_oz_ac"
           required
@@ -253,9 +262,9 @@ function SprayFields({
             className="h-12 text-base"
             {...register("rate_oz_ac")}
           />
-        </Field>
+        </FormField>
       </div>
-      <Field
+      <FormField
         label="Target Pest or Problem"
         htmlFor="target_pest"
         required
@@ -267,9 +276,9 @@ function SprayFields({
           className="h-12 text-base"
           {...register("target_pest")}
         />
-      </Field>
+      </FormField>
       <div className="grid grid-cols-2 gap-4">
-        <Field
+        <FormField
           label="Wind Speed (mph)"
           htmlFor="wind_mph"
           required
@@ -283,8 +292,8 @@ function SprayFields({
             className="h-12 text-base"
             {...register("wind_mph")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Temperature (°F)"
           htmlFor="temp_f"
           required
@@ -297,7 +306,7 @@ function SprayFields({
             className="h-12 text-base"
             {...register("temp_f")}
           />
-        </Field>
+        </FormField>
       </div>
 
       {/* Restricted use toggle */}
@@ -339,7 +348,7 @@ function SprayFields({
                 Applicator info is required for this record.
               </p>
             </div>
-            <Field
+            <FormField
               label="Applicator Name"
               htmlFor="applicator_name"
               required
@@ -351,8 +360,8 @@ function SprayFields({
                 className="h-12 text-base"
                 {...register("applicator_name")}
               />
-            </Field>
-            <Field
+            </FormField>
+            <FormField
               label="Applicator Certification Number"
               htmlFor="applicator_cert_number"
               required
@@ -364,7 +373,7 @@ function SprayFields({
                 className="h-12 text-base"
                 {...register("applicator_cert_number")}
               />
-            </Field>
+            </FormField>
           </div>
         )}
       </div>
@@ -381,7 +390,7 @@ function FertilizeFields({
 }) {
   return (
     <>
-      <Field
+      <FormField
         label="Product Name"
         htmlFor="product_name"
         required
@@ -393,9 +402,9 @@ function FertilizeFields({
           className="h-12 text-base"
           {...register("product_name")}
         />
-      </Field>
+      </FormField>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Field
+        <FormField
           label="Nitrogen — N (lbs/ac)"
           htmlFor="n_lbs_ac"
           required
@@ -408,8 +417,8 @@ function FertilizeFields({
             className="h-12 text-base"
             {...register("n_lbs_ac")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Phosphorus — P (lbs/ac)"
           htmlFor="p_lbs_ac"
           required
@@ -422,8 +431,8 @@ function FertilizeFields({
             className="h-12 text-base"
             {...register("p_lbs_ac")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Potassium — K (lbs/ac)"
           htmlFor="k_lbs_ac"
           required
@@ -436,9 +445,9 @@ function FertilizeFields({
             className="h-12 text-base"
             {...register("k_lbs_ac")}
           />
-        </Field>
+        </FormField>
       </div>
-      <Field
+      <FormField
         label="Application Method"
         htmlFor="method"
         required
@@ -454,7 +463,7 @@ function FertilizeFields({
           <option value="inject">Inject (knife into soil)</option>
           <option value="foliar">Foliar (sprayed on leaves)</option>
         </select>
-      </Field>
+      </FormField>
     </>
   );
 }
@@ -476,7 +485,7 @@ function ScoutFields({
   const SEVERITY_OPTIONS = [
     { value: "none", label: "None" },
     { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
+    { value: "moderate", label: "Medium" },
     { value: "high", label: "High" },
     { value: "critical", label: "Critical" },
   ];
@@ -484,7 +493,7 @@ function ScoutFields({
   const SEVERITY_COLORS: Record<string, string> = {
     none: "bg-muted text-muted-foreground border-border",
     low: "bg-green-100 text-green-700 border-green-300",
-    medium: "bg-amber-100 text-amber-700 border-amber-300",
+    moderate: "bg-amber-100 text-amber-700 border-amber-300",
     high: "bg-red-100 text-red-700 border-red-300",
     critical: "bg-red-200 text-red-900 border-red-500",
   };
@@ -492,7 +501,7 @@ function ScoutFields({
   return (
     <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field
+        <FormField
           label="Type of Problem"
           htmlFor="pest_type"
           required
@@ -508,8 +517,8 @@ function ScoutFields({
             <option value="weed">Weed</option>
             <option value="other">Other</option>
           </select>
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Pest or Problem Name"
           htmlFor="pest_name"
           required
@@ -521,7 +530,7 @@ function ScoutFields({
             className="h-12 text-base"
             {...register("pest_name")}
           />
-        </Field>
+        </FormField>
       </div>
 
       {/* Severity slider as big buttons */}
@@ -583,7 +592,7 @@ function ScoutFields({
         </div>
       </div>
 
-      <Field
+      <FormField
         label="Action Taken (optional)"
         htmlFor="action_taken"
         error={errors.action_taken?.message}
@@ -594,7 +603,7 @@ function ScoutFields({
           className="h-12 text-base"
           {...register("action_taken")}
         />
-      </Field>
+      </FormField>
     </>
   );
 }
@@ -609,7 +618,7 @@ function HarvestFields({
   return (
     <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Field
+        <FormField
           label="Yield (bu/acre)"
           htmlFor="yield_bu_ac"
           required
@@ -623,8 +632,8 @@ function HarvestFields({
             className="h-12 text-base"
             {...register("yield_bu_ac")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Moisture (%)"
           htmlFor="moisture_pct"
           required
@@ -638,8 +647,8 @@ function HarvestFields({
             className="h-12 text-base"
             {...register("moisture_pct")}
           />
-        </Field>
-        <Field
+        </FormField>
+        <FormField
           label="Test Weight (lbs/bu)"
           htmlFor="test_weight_lbs_bu"
           required
@@ -653,9 +662,9 @@ function HarvestFields({
             className="h-12 text-base"
             {...register("test_weight_lbs_bu")}
           />
-        </Field>
+        </FormField>
       </div>
-      <Field
+      <FormField
         label="Elevator Ticket Number (optional)"
         htmlFor="elevator_ticket"
         error={errors.elevator_ticket?.message}
@@ -666,7 +675,7 @@ function HarvestFields({
           className="h-12 text-base"
           {...register("elevator_ticket")}
         />
-      </Field>
+      </FormField>
     </>
   );
 }
@@ -703,7 +712,7 @@ export function ActivityForm({
       field_id: defaultFieldId ?? (fields[0]?.id ?? ""),
       activity_date: new Date().toISOString().slice(0, 10),
       acres: fields.find((f) => f.id === (defaultFieldId ?? fields[0]?.id))?.acres ?? "",
-      operator: "Dave Johnson",
+      operator: "",
       restricted_use: false,
       threshold_exceeded: false,
       severity: "low",
@@ -735,7 +744,6 @@ export function ActivityForm({
 
   async function onSubmit(data: Record<string, unknown>) {
     // Validate with the appropriate Zod schema
-    let result;
     const schema =
       selectedType === "plant"
         ? plantSchema
@@ -747,31 +755,62 @@ export function ActivityForm({
               ? scoutSchema
               : harvestSchema;
 
-    result = schema.safeParse({ ...data, activity_type: selectedType });
+    const result = schema.safeParse({ ...data, activity_type: selectedType });
     if (!result.success) {
       toast.error("Please fix the errors before saving.");
       return;
     }
 
-    // Simulate save
-    await new Promise((r) => setTimeout(r, 600));
+    const selectedField = fields.find((f) => f.id === data.field_id);
 
-    const fieldName = fields.find((f) => f.id === data.field_id)?.name ?? "your field";
-    toast.success(`Activity saved for ${fieldName}!`, {
-      description: "Your field log has been updated.",
-      action: {
-        label: "Log Another",
-        onClick: () => {
-          reset();
-          setSelectedType(null);
-          setStep(1);
+    // Build the type-specific details object — strip common + meta fields
+    const {
+      field_id,
+      activity_date,
+      acres,
+      operator,
+      equipment,
+      cost_per_acre,
+      notes,
+      activity_type: _activityType,
+      ...rawDetails
+    } = result.data as Record<string, unknown>;
+
+    // For spray, details includes all spray-specific keys already present in rawDetails.
+    // For scout/plant/fertilize/harvest the same pattern applies.
+    const details = rawDetails as Parameters<typeof api.activities.create>[0]["details"];
+
+    try {
+      await api.activities.create({
+        field_id: field_id as string,
+        farm_id: selectedField?.farm_id ?? "",
+        activity_type: selectedType!,
+        activity_date: activity_date as string,
+        acres: acres as number,
+        operator: operator as string,
+        equipment: equipment as string | undefined,
+        cost_per_acre: cost_per_acre as number | undefined,
+        notes: notes as string | undefined,
+        details,
+      });
+
+      const fieldName = selectedField?.name ?? "your field";
+      toast.success(`Activity saved for ${fieldName}!`, {
+        description: "Your field log has been updated.",
+        action: {
+          label: "Log Another",
+          onClick: () => {
+            reset();
+            setSelectedType(null);
+            setStep(1);
+          },
         },
-      },
-    });
+      });
 
-    setTimeout(() => {
       router.push("/activities");
-    }, 1200);
+    } catch {
+      toast.error("Failed to save — check your connection and try again.");
+    }
   }
 
   // Sync field_id's acres on mount / field change
@@ -857,14 +896,14 @@ export function ActivityForm({
             </div>
 
             {/* Date */}
-            <Field label="Date" htmlFor="activity_date" required error={errors.activity_date?.message as string | undefined}>
+            <FormField label="Date" htmlFor="activity_date" required error={errors.activity_date?.message as string | undefined}>
               <input
                 id="activity_date"
                 type="date"
                 className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
                 {...register("activity_date")}
               />
-            </Field>
+            </FormField>
 
             {/* Type-specific fields */}
             {selectedType === "plant" && (
@@ -906,7 +945,7 @@ export function ActivityForm({
             </h2>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field
+              <FormField
                 label="Total Acres"
                 htmlFor="acres"
                 required
@@ -919,8 +958,8 @@ export function ActivityForm({
                   className="h-12 text-base"
                   {...register("acres")}
                 />
-              </Field>
-              <Field
+              </FormField>
+              <FormField
                 label="Operator"
                 htmlFor="operator"
                 required
@@ -932,11 +971,11 @@ export function ActivityForm({
                   className="h-12 text-base"
                   {...register("operator")}
                 />
-              </Field>
+              </FormField>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field
+              <FormField
                 label="Equipment Used (optional)"
                 htmlFor="equipment"
                 error={errors.equipment?.message as string | undefined}
@@ -947,8 +986,8 @@ export function ActivityForm({
                   className="h-12 text-base"
                   {...register("equipment")}
                 />
-              </Field>
-              <Field
+              </FormField>
+              <FormField
                 label="Cost per Acre (optional)"
                 htmlFor="cost_per_acre"
                 error={errors.cost_per_acre?.message as string | undefined}
@@ -966,10 +1005,10 @@ export function ActivityForm({
                     {...register("cost_per_acre")}
                   />
                 </div>
-              </Field>
+              </FormField>
             </div>
 
-            <Field
+            <FormField
               label="Notes (optional)"
               htmlFor="notes"
               error={errors.notes?.message as string | undefined}
@@ -980,7 +1019,7 @@ export function ActivityForm({
                 className="min-h-[80px] text-base"
                 {...register("notes")}
               />
-            </Field>
+            </FormField>
           </section>
 
           {/* Save button */}

@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { CSPEnhancementList } from "@/components/csp/csp-enhancement-list";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 import type { CSPEligibility, CSPEnhancement } from "@/lib/api/types";
 
 import type { Metadata } from "next";

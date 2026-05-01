@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_authenticated_client, get_current_user
-from app.main import limiter
+from app.rate_limit import limiter
 from app.models.schemas import (
     CreditEligibilityGetResponse,
     CreditEvaluateResponse,
