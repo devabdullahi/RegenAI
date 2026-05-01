@@ -1,6 +1,50 @@
+"use client";
+
+import { useState } from "react";
 import { CheckCircle2, Circle, Zap, Package } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import type { CSPEnhancement } from "@/lib/api/types";
+
+// ── Status cycle ──────────────────────────────────────────────────────────────
+
+type EnhancementStatus = NonNullable<CSPEnhancement["status"]>;
+
+const STATUS_CYCLE: Record<
+  EnhancementStatus,
+  EnhancementStatus | null
+> = {
+  considering: "committed",
+  committed: "active",
+  active: "removed",
+  removed: "considering",
+};
+
+interface StatusAction {
+  label: string;
+  variant: "outline" | "default" | "destructive" | "ghost";
+  className?: string;
+}
+
+function getStatusAction(status: EnhancementStatus | undefined): StatusAction | null {
+  switch (status) {
+    case "considering":
+      return {
+        label: "Add to Plan",
+        variant: "outline",
+        className:
+          "border-green-600 text-green-700 hover:bg-green-50 hover:text-green-800 dark:hover:bg-green-950",
+      };
+    case "committed":
+      return { label: "Mark Active", variant: "default" };
+    case "active":
+      return { label: "Remove", variant: "destructive" };
+    case "removed":
+      return { label: "Reconsider", variant: "ghost" };
+    default:
+      return null;
+  }
+}
 
 // ── Difficulty label ──────────────────────────────────────────────────────────
 
@@ -17,11 +61,7 @@ function difficultyFromPoints(points: number): {
 
 // ── Status chip ───────────────────────────────────────────────────────────────
 
-function StatusChip({
-  status,
-}: {
-  status: CSPEnhancement["status"];
-}) {
+function StatusChip({ status }: { status: CSPEnhancement["status"] }) {
   if (status === "active") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
@@ -51,10 +91,26 @@ function StatusChip({
 
 // ── Single enhancement item ───────────────────────────────────────────────────
 
-function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
+interface EnhancementItemProps {
+  enhancement: CSPEnhancement;
+  onStatusChange?: (id: string, status: EnhancementStatus) => void;
+}
+
+function EnhancementItem({ enhancement, onStatusChange }: EnhancementItemProps) {
   const difficulty = difficultyFromPoints(enhancement.point_weight);
   const isSelected =
     enhancement.status === "active" || enhancement.status === "committed";
+
+  const action = getStatusAction(enhancement.status);
+  const nextStatus = enhancement.status
+    ? STATUS_CYCLE[enhancement.status]
+    : null;
+
+  function handleStatusClick() {
+    if (nextStatus && onStatusChange) {
+      onStatusChange(enhancement.id, nextStatus);
+    }
+  }
 
   return (
     <li
@@ -114,8 +170,8 @@ function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
         </p>
       )}
 
-      {/* Payment info */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+      {/* Payment info + status action */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span>
             ${enhancement.base_payment_rate}/{enhancement.payment_unit}
@@ -130,30 +186,43 @@ function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
               EQIP {enhancement.eqip_practice_code}
             </span>
           )}
+          {enhancement.estimated_payment !== undefined &&
+            enhancement.estimated_payment !== null && (
+              <span className="text-sm font-semibold text-primary">
+                ~${enhancement.estimated_payment.toLocaleString()}/yr
+              </span>
+            )}
         </div>
-        {enhancement.estimated_payment !== undefined &&
-          enhancement.estimated_payment !== null && (
-            <span className="text-sm font-semibold text-primary">
-              ~${enhancement.estimated_payment.toLocaleString()}/yr
-            </span>
-          )}
+
+        {action && onStatusChange && (
+          <Button
+            variant={action.variant}
+            className={`min-h-[48px] cursor-pointer shrink-0 ${action.className ?? ""}`}
+            onClick={handleStatusClick}
+            aria-label={`${action.label}: ${enhancement.name}`}
+          >
+            {action.label}
+          </Button>
+        )}
       </div>
     </li>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Static list (used inside manager or standalone) ───────────────────────────
 
 interface CSPEnhancementListProps {
   enhancements: CSPEnhancement[];
   title?: string;
   showEmpty?: boolean;
+  onStatusChange?: (id: string, status: EnhancementStatus) => void;
 }
 
 export function CSPEnhancementList({
   enhancements,
   title = "Recommended enhancements",
   showEmpty = true,
+  onStatusChange,
 }: CSPEnhancementListProps) {
   if (enhancements.length === 0 && !showEmpty) return null;
 
@@ -184,10 +253,127 @@ export function CSPEnhancementList({
       ) : (
         <ul className="space-y-3" aria-label="Enhancement activities">
           {enhancements.map((enh) => (
-            <EnhancementItem key={enh.id} enhancement={enh} />
+            <EnhancementItem
+              key={enh.id}
+              enhancement={enh}
+              onStatusChange={onStatusChange}
+            />
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+// ── Interactive manager (client-side state, no backend required) ──────────────
+
+interface CSPEnhancementManagerProps {
+  initialEnhancements: CSPEnhancement[];
+}
+
+export function CSPEnhancementManager({
+  initialEnhancements,
+}: CSPEnhancementManagerProps) {
+  const [enhancements, setEnhancements] =
+    useState<CSPEnhancement[]>(initialEnhancements);
+
+  function handleStatusChange(id: string, newStatus: EnhancementStatus) {
+    setEnhancements((prev) =>
+      prev.map((enh) =>
+        enh.id === id ? { ...enh, status: newStatus } : enh
+      )
+    );
+  }
+
+  const visibleEnhancements = enhancements.filter(
+    (e) => e.status !== "removed"
+  );
+
+  const activeEnhancements = visibleEnhancements.filter(
+    (e) => e.status === "active" || e.status === "committed"
+  );
+
+  const consideringEnhancements = visibleEnhancements.filter(
+    (e) => e.status === "considering"
+  );
+
+  const totalSelectedPayment = activeEnhancements.reduce(
+    (sum, e) => sum + (e.estimated_payment ?? 0),
+    0
+  );
+
+  const removedCount = enhancements.length - visibleEnhancements.length;
+
+  return (
+    <div className="space-y-8">
+      {/* Summary bar */}
+      {activeEnhancements.length > 0 && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">
+              {activeEnhancements.length} enhancement
+              {activeEnhancements.length !== 1 ? "s" : ""} selected
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Codes: {activeEnhancements.map((e) => e.code).join(", ")}
+            </p>
+          </div>
+          {totalSelectedPayment > 0 && (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">Added to payment</p>
+              <p className="font-heading text-xl font-bold text-primary">
+                +${totalSelectedPayment.toLocaleString()}/yr
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Selected enhancements */}
+      {activeEnhancements.length > 0 && (
+        <CSPEnhancementList
+          enhancements={activeEnhancements}
+          title="Your selected enhancements"
+          showEmpty={false}
+          onStatusChange={handleStatusChange}
+        />
+      )}
+
+      {/* Divider between sections */}
+      {activeEnhancements.length > 0 && consideringEnhancements.length > 0 && (
+        <hr className="border-border" />
+      )}
+
+      {/* Enhancements to consider */}
+      {consideringEnhancements.length > 0 && (
+        <CSPEnhancementList
+          enhancements={consideringEnhancements}
+          title="More enhancements to consider"
+          showEmpty={false}
+          onStatusChange={handleStatusChange}
+        />
+      )}
+
+      {/* Empty state */}
+      {visibleEnhancements.length === 0 && (
+        <div className="rounded-xl border border-border bg-card p-8 text-center">
+          <p className="text-sm font-medium text-foreground mb-1">
+            No active enhancements
+          </p>
+          <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+            All enhancements have been removed. Use the buttons above to add
+            them back to your plan.
+          </p>
+        </div>
+      )}
+
+      {/* Removed count hint */}
+      {removedCount > 0 && (
+        <p className="text-xs text-center text-muted-foreground">
+          {removedCount} enhancement{removedCount !== 1 ? "s" : ""} removed
+          from plan — tap &ldquo;Reconsider&rdquo; on any item to restore it.
+        </p>
+      )}
+    </div>
   );
 }

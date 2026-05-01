@@ -150,7 +150,7 @@ export function CSPScoreGauge({
         </div>
         <div className="flex justify-between text-xs text-muted-foreground">
           <span>0</span>
-          <span className="text-sm font-semibold text-amber-600">
+          <span className="text-sm font-bold text-amber-700">
             Iowa ACT NOW threshold: 60
           </span>
           <span>100</span>
