@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ClipboardList,
@@ -34,6 +35,18 @@ const TYPE_ICONS: Record<ActivityType, React.ElementType> = {
   other: ClipboardList,
 };
 
+/** Default zero-count seed for all known activity types. */
+const TYPE_COUNTS: Record<ActivityType, number> = {
+  plant: 0,
+  spray: 0,
+  fertilize: 0,
+  scout: 0,
+  harvest: 0,
+  tillage: 0,
+  cover_crop: 0,
+  other: 0,
+};
+
 const TYPE_COLORS: Record<ActivityType, string> = {
   plant: "bg-green-100 text-green-700",
   spray: "bg-blue-100 text-blue-700",
@@ -62,12 +75,8 @@ export default function ActivitiesPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Determine farm_id from current URL searchParams
-  const farmId =
-    typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get("farm_id") ??
-        new URLSearchParams(window.location.search).get("farm") ??
-        null
-      : null;
+  const searchParams = useSearchParams();
+  const farmId = searchParams.get("farm_id") ?? searchParams.get("farm");
 
   useEffect(() => {
     let cancelled = false;
@@ -133,9 +142,10 @@ export default function ActivitiesPage() {
     });
   }, [activities, filters]);
 
-  // Count per type for the quick-stat row
+  // Count per type for the quick-stat row — seeded from TYPE_COUNTS so every
+  // type (including tillage and cover_crop) always has an entry.
   const typeCounts = useMemo(() => {
-    const counts: Partial<Record<ActivityType, number>> = {};
+    const counts: Record<ActivityType, number> = { ...TYPE_COUNTS };
     activities.forEach((a) => {
       counts[a.activity_type] = (counts[a.activity_type] ?? 0) + 1;
     });
@@ -266,13 +276,8 @@ export default function ActivitiesPage() {
       </div>
 
       {/* Quick count strip — only shown when there are activities */}
-      {Object.keys(typeCounts).length > 0 && (
-        <div
-          className="grid gap-2"
-          style={{
-            gridTemplateColumns: `repeat(${Math.min(Object.keys(typeCounts).length, 5)}, minmax(0, 1fr))`,
-          }}
-        >
+      {activities.length > 0 && (
+        <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
           {(Object.entries(typeCounts) as [ActivityType, number][]).map(
             ([type, count]) => {
               const Icon = TYPE_ICONS[type] ?? ClipboardList;

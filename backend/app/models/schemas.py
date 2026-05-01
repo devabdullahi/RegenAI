@@ -77,26 +77,63 @@ _GEOMETRY_TYPES_REQUIRING_COORDINATES = frozenset(
 )
 
 
+def _validate_polygon_rings(coordinates: Any) -> None:
+    """Validate RFC 7946 Polygon ring rules.
+
+    Each ring must have at least 4 positions and be closed (first position
+    equal to last position).  Raises ValueError on violation.
+    """
+    if not isinstance(coordinates, list):
+        raise ValueError(
+            "Invalid boundary geometry: Polygon coordinates must be a list of rings"
+        )
+    for ring_index, ring in enumerate(coordinates):
+        if not isinstance(ring, list):
+            raise ValueError(
+                f"Invalid boundary geometry: Polygon ring {ring_index} must be a list of positions"
+            )
+        if len(ring) < 4:
+            raise ValueError(
+                f"Invalid boundary geometry: Polygon ring {ring_index} must have at least "
+                f"4 positions (RFC 7946), got {len(ring)}"
+            )
+        if ring[0] != ring[-1]:
+            raise ValueError(
+                f"Invalid boundary geometry: Polygon ring {ring_index} is not closed "
+                f"(first position must equal last position per RFC 7946)"
+            )
+
+
 def _validate_boundary_geojson(value: Any) -> Any:
-    """Shared structural validator for GeoJSON boundary fields."""
+    """Shared structural validator for GeoJSON boundary fields (RFC 7946)."""
     if value is None:
         return value
     if not isinstance(value, dict):
         raise ValueError("Invalid boundary geometry: must be valid GeoJSON")
     geo_type = value.get("type")
+    if geo_type is None:
+        raise ValueError(
+            "Invalid boundary geometry: GeoJSON object must have a 'type' field. "
+            "Expected one of: Point, Polygon, MultiPolygon, LineString, "
+            "MultiLineString, MultiPoint, GeometryCollection, Feature, FeatureCollection"
+        )
     if geo_type not in _VALID_GEOJSON_TYPES:
         raise ValueError(
-            "Invalid boundary geometry: must be valid GeoJSON"
+            f"Invalid boundary geometry: unsupported GeoJSON type '{geo_type}'. "
+            "Expected one of: Point, Polygon, MultiPolygon, LineString, "
+            "MultiLineString, MultiPoint, GeometryCollection, Feature, FeatureCollection"
         )
     if geo_type in _GEOMETRY_TYPES_REQUIRING_COORDINATES and "coordinates" not in value:
         raise ValueError(
-            "Invalid boundary geometry: must be valid GeoJSON"
+            f"Invalid boundary geometry: GeoJSON type '{geo_type}' requires a 'coordinates' field"
         )
+    if geo_type == "Polygon":
+        _validate_polygon_rings(value["coordinates"])
     return value
 
 
 class FieldCreate(BaseModel):
-    farm_id: str
+    farm_id: UUID
     name: str = Field(..., min_length=1, max_length=200)
     acres: float = Field(..., gt=0)
     crop_type: str = Field(..., min_length=1, max_length=100)
@@ -125,8 +162,8 @@ class FieldUpdate(BaseModel):
 
 
 class FieldResponse(BaseModel):
-    id: str
-    farm_id: str
+    id: UUID
+    farm_id: UUID
     name: str
     acres: float
     crop_type: str
@@ -603,7 +640,7 @@ class DocumentType(str, Enum):
 class DocumentCreate(BaseModel):
     """Metadata submitted alongside a multipart file upload."""
 
-    farm_id: str
+    farm_id: UUID
     doc_type: DocumentType
     description: str | None = Field(None, max_length=500)
 

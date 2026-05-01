@@ -167,13 +167,16 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex min-h-[48px] flex-col items-center justify-center gap-1 px-3 py-1 text-xs font-medium ${
+                className={`flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 px-3 py-1 text-xs font-medium ${
                   isActive ? "text-primary" : "text-muted-foreground"
                 }`}
                 aria-current={isActive ? "page" : undefined}
               >
-                <item.icon className="h-5 w-5" aria-hidden="true" />
-                {item.label}
+                <item.icon className="h-6 w-6 shrink-0" aria-hidden="true" />
+                {/* Label hidden below 480px (icon-only tab bar), visible above */}
+                <span className="hidden min-[480px]:inline leading-tight">{item.label}</span>
+                {/* Screen-reader label always present so icon-only mode stays accessible */}
+                <span className="sr-only min-[480px]:hidden">{item.label}</span>
               </Link>
             );
           })}
@@ -183,12 +186,13 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
             aria-expanded={programsOpen}
             aria-haspopup="true"
             aria-label="Open programs menu"
-            className={`flex min-h-[48px] flex-col items-center justify-center gap-1 px-3 py-1 text-xs font-medium cursor-pointer transition-colors ${
+            className={`flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 px-3 py-1 text-xs font-medium cursor-pointer transition-colors ${
               isProgramsActive || programsOpen ? "text-primary" : "text-muted-foreground"
             }`}
           >
-            <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
-            Programs
+            <MoreHorizontal className="h-6 w-6 shrink-0" aria-hidden="true" />
+            <span className="hidden min-[480px]:inline leading-tight">Programs</span>
+            <span className="sr-only min-[480px]:hidden">Programs</span>
           </button>
         </div>
       </nav>

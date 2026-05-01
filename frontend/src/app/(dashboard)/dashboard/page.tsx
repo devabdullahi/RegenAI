@@ -13,7 +13,7 @@ import { SoilWidget } from "@/components/dashboard/soil-widget";
 import { CreditPanel } from "@/components/dashboard/credit-panel";
 import { CspStatusWidget } from "@/components/csp/csp-status-widget";
 import { RecentActivityWidget } from "@/components/activities/recent-activity-widget";
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 import type { Farm, Field, Recommendation, CreditEligibility, ActivitySummary, CSPEligibility } from "@/lib/api/types";
 
 interface DashboardPageProps {

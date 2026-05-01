@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_authenticated_client, get_current_user
-from app.main import limiter
+from app.rate_limit import limiter
 from app.services.csp_eligibility import evaluate_csp_eligibility
 from app.services.csp_payment import estimate_csp_payments, get_recommended_enhancements
 from app.services.csp_scoring import calculate_stewardship_score

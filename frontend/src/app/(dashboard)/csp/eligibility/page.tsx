@@ -16,7 +16,7 @@ import { CSPEligibilityBadge } from "@/components/csp/csp-eligibility-card";
 import { CSPScoreGauge } from "@/components/csp/csp-score-gauge";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { api } from "@/lib/api/client";
+import { api } from "@/lib/api/server-client";
 
 import type { Metadata } from "next";
 import type { CSPResourceConcernResult, CSPEligibility, CSPScore } from "@/lib/api/types";

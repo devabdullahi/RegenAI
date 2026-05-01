@@ -1,8 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
+from app.rate_limit import limiter
 from app.models.schemas import FarmCreate, FarmUpdate, FarmResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/farms", tags=["Farms"])
 
@@ -13,12 +19,18 @@ async def list_farms(
     supabase=Depends(get_authenticated_client),
 ):
     """List all farms for the current user. RLS enforces user isolation."""
-    result = supabase.table("farms").select("*").order("created_at", desc=True).execute()
-    return result.data
+    try:
+        result = supabase.table("farms").select("*").order("created_at", desc=True).execute()
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to list farms: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list farms")
 
 
 @router.post("/", response_model=FarmResponse, status_code=201)
+@limiter.limit("30/hour")
 async def create_farm(
+    request: Request,
     farm: FarmCreate,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
@@ -32,16 +44,22 @@ async def create_farm(
         "total_acres": farm.total_acres,
         "goals": farm.goals.value if farm.goals else None,
     }
-    result = supabase.table("farms").insert(data).execute()
-    if not result.data:
+    try:
+        result = supabase.table("farms").insert(data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create farm")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create farm: {e}")
         raise HTTPException(status_code=500, detail="Failed to create farm")
-    return result.data[0]
 
 
 @router.get("/{farm_id}", response_model=FarmResponse)
 async def get_farm(
-    farm_id: str,
-    user=Depends(get_current_user),
+    farm_id: UUID,
+    _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Get a single farm by ID. RLS ensures user can only access their own."""
@@ -54,13 +72,13 @@ async def get_farm(
 
 @router.patch("/{farm_id}", response_model=FarmResponse)
 async def update_farm(
-    farm_id: str,
+    farm_id: UUID,
     farm: FarmUpdate,
-    user=Depends(get_current_user),
+    _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Partially update farm details. Only provided fields are updated."""
-    data = farm.model_dump(exclude_none=True)
+    data = farm.model_dump(exclude_unset=True)
     if "goals" in data and data["goals"] is not None:
         data["goals"] = data["goals"].value if hasattr(data["goals"], "value") else data["goals"]
     if not data:
@@ -73,8 +91,8 @@ async def update_farm(
 
 @router.delete("/{farm_id}", status_code=204)
 async def delete_farm(
-    farm_id: str,
-    user=Depends(get_current_user),
+    farm_id: UUID,
+    _user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Delete a farm. RLS ensures user can only delete their own."""

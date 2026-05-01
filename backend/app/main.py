@@ -2,13 +2,13 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from app.config import settings
+from app.rate_limit import limiter
 from app.routers import activities, credits, csp, documents, farms, fields, health, recommendations
 
 # ---------------------------------------------------------------------------
@@ -18,10 +18,10 @@ API_V1_PREFIX = "/api/v1"
 
 # ---------------------------------------------------------------------------
 # Rate limiting
-# Individual endpoint limits should be applied via @limiter.limit() decorators
-# in each router file.
+# The limiter singleton lives in app.rate_limit to avoid the circular import
+# that would arise if routers imported from app.main (which imports them).
+# Individual endpoint limits are applied via @limiter.limit() in each router.
 # ---------------------------------------------------------------------------
-limiter = Limiter(key_func=get_remote_address)
 
 
 # ---------------------------------------------------------------------------

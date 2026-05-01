@@ -1,19 +1,88 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Info } from "lucide-react";
+import { Info, AlertCircle } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 import { CSPEnhancementList } from "@/components/csp/csp-enhancement-list";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
-import { mockFarms } from "@/lib/mocks/farms";
-import { mockCSPEnhancements, mockCSPEligibility } from "@/lib/mocks/csp";
+import { api } from "@/lib/api/server-client";
+import type { CSPEligibility, CSPEnhancement } from "@/lib/api/types";
 
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "CSP Enhancements — RegenAI",
 };
+
+// ── Derive CSPEnhancement stubs from the active codes on the eligibility ──────
+// There is no dedicated /csp/enhancements endpoint. We build minimal enhancement
+// objects from the codes the eligibility response already carries so the UI has
+// real data to render instead of mocks.
+
+function deriveEnhancements(eligibility: CSPEligibility): CSPEnhancement[] {
+  return eligibility.active_enhancement_codes.map((code, index) => ({
+    id: `enh-${code}`,
+    code,
+    name: code,
+    category: "Conservation Activity",
+    land_use: "cropland",
+    description: `Enhancement activity ${code} is active on this farm.`,
+    implementation_notes:
+      "Contact your local NRCS office to confirm enhancement eligibility and finalize your selections.",
+    base_payment_rate: 0,
+    payment_unit: "acre",
+    is_bundle_eligible: false,
+    bundle_code: null,
+    eqip_practice_code: eligibility.qualifying_eqip_codes[index] ?? null,
+    point_weight: 0,
+    resource_concern_code: "",
+    status: "active" as const,
+    acres_enrolled: undefined,
+    estimated_payment: undefined,
+  }));
+}
+
+// ── Error state ───────────────────────────────────────────────────────────────
+
+function EnhancementsError({ message }: { message: string }) {
+  return (
+    <div className="pb-20 sm:pb-0">
+      <div className="mb-6">
+        <h1 className="font-heading text-2xl font-bold text-foreground">
+          Enhancement Activities
+        </h1>
+      </div>
+      <Card className="py-12 text-center">
+        <CardContent className="flex flex-col items-center gap-5">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
+            <AlertCircle
+              className="h-8 w-8 text-destructive"
+              aria-hidden="true"
+            />
+          </div>
+          <div className="max-w-sm">
+            <h2 className="font-heading text-lg font-semibold text-foreground">
+              Could not load enhancements
+            </h2>
+            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
+              {message}
+            </p>
+          </div>
+          <Link href="/farms">
+            <Button variant="outline" className="min-h-[48px] cursor-pointer">
+              Back to farms
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 interface EnhancementsPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
@@ -23,18 +92,30 @@ export default async function CspEnhancementsPage({
   searchParams,
 }: EnhancementsPageProps) {
   const params = await searchParams;
-  const farmIdParam =
+  const farmId =
     typeof params.farm_id === "string" ? params.farm_id : undefined;
 
-  const farm =
-    mockFarms.find((f) => f.id === farmIdParam) ?? mockFarms[0] ?? null;
-
-  if (!farm) {
+  if (!farmId) {
     redirect("/farms");
   }
 
-  const eligibility = mockCSPEligibility;
-  const enhancements = mockCSPEnhancements;
+  let farmName: string;
+  let eligibility: CSPEligibility;
+
+  try {
+    const [farm, cspEligibility] = await Promise.all([
+      api.farms.get(farmId),
+      api.csp.getEligibility(farmId),
+    ]);
+    farmName = farm.name;
+    eligibility = cspEligibility;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load enhancements data.";
+    return <EnhancementsError message={message} />;
+  }
+
+  const enhancements = deriveEnhancements(eligibility);
 
   const activeEnhancements = enhancements.filter(
     (e) => e.status === "active" || e.status === "committed"
@@ -54,11 +135,11 @@ export default async function CspEnhancementsPage({
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <Link href="/farms" className="hover:text-foreground transition-colors">
-            {farm.name}
+            {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farm.id}`}
+            href={`/csp?farm_id=${farmId}`}
             className="hover:text-foreground transition-colors"
           >
             CSP Navigator
@@ -91,12 +172,14 @@ export default async function CspEnhancementsPage({
               {activeEnhancements.map((e) => e.code).join(", ")}
             </p>
           </div>
-          <div className="text-right">
-            <p className="text-xs text-muted-foreground">Added to payment</p>
-            <p className="font-heading text-xl font-bold text-primary">
-              +${totalSelectedPayment.toLocaleString()}/yr
-            </p>
-          </div>
+          {totalSelectedPayment > 0 && (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">Added to payment</p>
+              <p className="font-heading text-xl font-bold text-primary">
+                +${totalSelectedPayment.toLocaleString()}/yr
+              </p>
+            </div>
+          )}
         </div>
       )}
 

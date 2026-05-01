@@ -36,7 +36,7 @@ export function CSPEligibilityBadge({
       </span>
     );
   }
-  if (status === "conditional") {
+  if (status === "act_now") {
     return (
       <span className={`${base} bg-amber-100 text-amber-700`}>
         <AlertTriangle
@@ -78,7 +78,7 @@ function statusExplanation(
   if (status === "eligible") {
     return `Your farm currently meets the conservation standards in ${rcCount} out of 8 areas. You qualify to apply for a 5-year CSP contract.`;
   }
-  if (status === "conditional") {
+  if (status === "act_now") {
     return `Your farm meets standards in ${rcCount} out of 8 areas. You need at least 2 to be eligible. One more improvement gets you there.`;
   }
   if (status === "not_eligible") {
@@ -112,7 +112,7 @@ export function CSPEligibilityCard({
   const borderColor =
     eligibility_status === "eligible"
       ? "border-green-200"
-      : eligibility_status === "conditional"
+      : eligibility_status === "act_now"
         ? "border-amber-200"
         : eligibility_status === "not_eligible"
           ? "border-red-200"
@@ -121,7 +121,7 @@ export function CSPEligibilityCard({
   const bgColor =
     eligibility_status === "eligible"
       ? "bg-green-50"
-      : eligibility_status === "conditional"
+      : eligibility_status === "act_now"
         ? "bg-amber-50"
         : eligibility_status === "not_eligible"
           ? "bg-red-50"

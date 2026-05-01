@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_current_user, get_authenticated_client
-from app.main import limiter
+from app.rate_limit import limiter
 from app.models.schemas import RecommendationResponse, RecommendationStatusUpdate
 from app.services.recommendations import generate_recommendations as run_generation
 
@@ -21,14 +21,18 @@ async def list_recommendations(
     supabase=Depends(get_authenticated_client),
 ):
     """List recommendations for a field."""
-    result = (
-        supabase.table("recommendations")
-        .select("*")
-        .eq("field_id", field_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    try:
+        result = (
+            supabase.table("recommendations")
+            .select("*")
+            .eq("field_id", field_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        logger.error(f"Failed to list recommendations: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list recommendations")
 
 
 @router.patch("/{recommendation_id}/status", response_model=RecommendationResponse)
@@ -39,15 +43,21 @@ async def update_recommendation_status(
     supabase=Depends(get_authenticated_client),
 ):
     """Update a recommendation's status (pending → acted/dismissed)."""
-    result = (
-        supabase.table("recommendations")
-        .update({"status": body.status.value})
-        .eq("id", recommendation_id)
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
-    return result.data[0]
+    try:
+        result = (
+            supabase.table("recommendations")
+            .update({"status": body.status.value})
+            .eq("id", recommendation_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update recommendation {recommendation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update recommendation")
 
 
 @router.post("/generate", status_code=202)
@@ -78,23 +88,25 @@ async def generate_recommendations(
             status_code=500,
             detail="Recommendation generation failed. Please try again later.",
         )
-    except anthropic.APIError:
-        logger.exception("Anthropic API error during recommendation generation for farm=%s", farm_id)
-        raise HTTPException(
-            status_code=500,
-            detail="Recommendation generation failed. Please try again later.",
-        )
     except anthropic.APIConnectionError:
+        # Subclass of anthropic.APIError — must be caught before the parent.
         logger.exception("Anthropic connection error for farm=%s", farm_id)
         raise HTTPException(
             status_code=503,
             detail="AI service temporarily unavailable. Please try again later.",
         )
     except anthropic.RateLimitError:
+        # Subclass of anthropic.APIError — must be caught before the parent.
         logger.warning("Anthropic rate limit hit for farm=%s", farm_id)
         raise HTTPException(
             status_code=503,
             detail="AI service is busy. Please try again in a few minutes.",
+        )
+    except anthropic.APIError:
+        logger.exception("Anthropic API error during recommendation generation for farm=%s", farm_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Recommendation generation failed. Please try again later.",
         )
 
     return {

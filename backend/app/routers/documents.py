@@ -20,10 +20,13 @@ Upload constraints:
 import logging
 import uuid
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import get_authenticated_client, get_current_user
+from app.rate_limit import limiter
 from app.models.schemas import DocumentCreate, DocumentResponse, DocumentType
 
 logger = logging.getLogger(__name__)
@@ -49,9 +52,17 @@ def _build_storage_path(user_id: str, farm_id: str, doc_type: str, filename: str
     return f"{user_id}/{farm_id}/{doc_type}/{unique_prefix}_{safe_name}"
 
 
-async def _assert_farm_ownership(farm_id: str, supabase) -> None:
-    """Raise HTTP 404 if the farm does not exist or is not accessible via RLS."""
-    result = supabase.table("farms").select("id").eq("id", farm_id).single().execute()
+async def _assert_farm_ownership(farm_id: UUID, supabase) -> None:
+    """Raise HTTP 404 if the farm does not exist or is not accessible via RLS.
+
+    .single().execute() raises postgrest.exceptions.APIError (PGRST116) when
+    zero rows are returned, so we catch that and convert it to a clean 404
+    rather than letting it propagate as an unhandled 500.
+    """
+    try:
+        result = supabase.table("farms").select("id").eq("id", farm_id).single().execute()
+    except APIError:
+        raise HTTPException(status_code=404, detail="Farm not found")
     if not result.data:
         raise HTTPException(status_code=404, detail="Farm not found")
 
@@ -62,8 +73,10 @@ async def _assert_farm_ownership(farm_id: str, supabase) -> None:
 
 
 @router.post("/", response_model=DocumentResponse, status_code=201)
+@limiter.limit("20/hour")
 async def upload_document(
-    farm_id: Annotated[str, Form(description="UUID of the farm this document belongs to")],
+    request: Request,
+    farm_id: Annotated[UUID, Form(description="UUID of the farm this document belongs to")],
     doc_type: Annotated[DocumentType, Form(description="Document category")],
     file: Annotated[UploadFile, File(description="File to upload (max 10 MB)")],
     description: Annotated[str | None, Form(max_length=500)] = None,
@@ -99,12 +112,23 @@ async def upload_document(
     if not filename:
         raise HTTPException(status_code=400, detail="Uploaded file must have a filename.")
 
-    # Read file into memory and enforce size limit.
+    # Fast path: reject oversized uploads before reading the body.
+    # Content-Length can be spoofed by clients, so this is a best-effort early
+    # rejection only — the definitive size check after file.read() below is
+    # the authoritative enforcement point.
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large: request body exceeds the 10 MB limit.",
+        )
+
+    # Read file into memory and enforce size limit (authoritative check).
     contents = await file.read()
     size_bytes = len(contents)
     if size_bytes > _MAX_FILE_SIZE:
         raise HTTPException(
-            status_code=400,
+            status_code=413,
             detail=f"File size {size_bytes:,} bytes exceeds the 10 MB limit.",
         )
 
@@ -170,7 +194,7 @@ async def upload_document(
 
 @router.get("/", response_model=list[DocumentResponse])
 async def list_documents(
-    farm_id: str = Query(..., description="UUID of the farm to list documents for"),
+    farm_id: UUID = Query(..., description="UUID of the farm to list documents for"),
     doc_type: DocumentType | None = Query(None, description="Filter by document type"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
