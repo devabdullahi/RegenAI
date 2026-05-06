@@ -1,13 +1,7 @@
-"use client" // This directive applies only to OfflineBanner below; the layout itself is async server
-
-// NOTE: The layout export below is an async server component.
-// OfflineBanner is split out as its own client component.
-
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardNav } from "@/components/shared/dashboard-nav";
-import { OfflineBanner } from "@/components/shared/offline-banner";
 
 // DashboardNav uses useSearchParams() so it must be wrapped in Suspense
 // to allow static prerendering of dashboard pages per Next.js requirements.
