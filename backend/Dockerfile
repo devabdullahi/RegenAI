@@ -11,15 +11,17 @@ RUN apt-get update && apt-get install -y \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry (pinned to avoid silent breakage from upstream changes)
-RUN pip install "poetry==1.8.3"
+# Install Poetry. Pinned to match CI (.github/workflows/ci.yml): poetry.lock is
+# lock-version 2.1, which Poetry 1.x cannot read.
+RUN pip install "poetry==2.3.3"
 
 # Copy dependency files
 COPY pyproject.toml poetry.lock ./
 
-# Install production dependencies only
+# Install production dependencies only. --no-root: the app is run from source,
+# not installed as a package (the source is not copied yet at this layer).
 RUN poetry config virtualenvs.create false \
-    && poetry install --only main --no-interaction --no-ansi
+    && poetry install --only main --no-root --no-interaction --no-ansi
 
 # Run as a non-root user to reduce the container's attack surface
 RUN addgroup --system app && adduser --system --ingroup app app

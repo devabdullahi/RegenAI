@@ -1,107 +1,136 @@
-import { DollarSign, Info } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import type { CSPPaymentEstimate } from "@/lib/api/types";
+import { LedgerRow, RuleHead, Stamp, EdgeNote } from "@/components/shared/record";
+import { formatAcres, formatUsd } from "@/lib/format";
+import { practiceStandardStamp } from "@/lib/csp-status";
+import { cn } from "@/lib/utils";
+import { toneTextClasses } from "@/lib/status-styles";
+import type { CSPPaymentEstimate, CSPRuleCitation } from "@/lib/api/types";
 
-// ── Payment line row ──────────────────────────────────────────────────────────
+/**
+ * The payment estimate printed as a scale ticket: one line per amount, dotted
+ * leaders, a rule above the total, and the total set as the largest figure on
+ * the sheet. Every amount keeps the source and as-of date it arrived with.
+ */
 
-function PaymentRow({
-  label,
-  amount,
-  sublabel,
-  highlight = false,
+// ── Rule citation ─────────────────────────────────────────────────────────────
+
+function formatAsOf(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Small "Rules as of <date> · source" caption, set in mono like a file note. */
+export function CSPRulesCitation({
+  rules,
+  className = "",
 }: {
-  label: string;
-  amount: number;
-  sublabel?: string;
-  highlight?: boolean;
+  rules: CSPRuleCitation;
+  className?: string;
 }) {
   return (
-    <div
-      className={`flex items-center justify-between gap-3 py-3 border-b border-border last:border-0 ${highlight ? "rounded-lg bg-primary/5 px-3 -mx-3" : ""}`}
-    >
-      <div className="min-w-0">
-        <p
-          className={`text-sm leading-snug ${highlight ? "font-semibold text-foreground" : "text-foreground"}`}
-        >
-          {label}
-        </p>
-        {sublabel && (
-          <p className="text-xs text-muted-foreground">{sublabel}</p>
-        )}
-      </div>
-      <p
-        className={`shrink-0 font-heading font-bold ${highlight ? "text-xl text-primary" : "text-base text-foreground"}`}
-      >
-        ${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-      </p>
-    </div>
+    <p className={cn("font-mono text-xs text-muted-foreground", className)}>
+      Rules as of {formatAsOf(rules.as_of)}
+      {rules.source_url && (
+        <>
+          {" "}
+          &middot;{" "}
+          <a
+            href={rules.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={rules.source_title}
+            className="inline-flex min-h-12 items-center underline underline-offset-2 hover:text-foreground"
+          >
+            source
+          </a>
+        </>
+      )}
+    </p>
   );
 }
 
-// ── Enhancement breakdown table ───────────────────────────────────────────────
+// ── Activity breakdown table ──────────────────────────────────────────────────
 
-function EnhancementTable({
+const COL_HEAD =
+  "py-1.5 font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
+
+function ActivityTable({
   items,
+  rateBasis,
 }: {
-  items: CSPPaymentEstimate["enhancement_breakdown"];
+  items: CSPPaymentEstimate["activity_breakdown"];
+  rateBasis: string;
 }) {
   if (items.length === 0) return null;
 
   return (
     <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        Enhancement activity payments
-      </p>
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table
-          className="w-full text-sm"
-          aria-label="Enhancement payment breakdown"
-        >
+      <RuleHead label="Conservation activity payments (estimated)" />
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" aria-label="Activity payment breakdown">
           <thead>
-            <tr className="border-b border-border bg-muted/40 text-left">
-              <th className="px-3 py-2.5 text-xs font-medium text-muted-foreground">
+            <tr className="border-b border-rule">
+              <th scope="col" className={cn(COL_HEAD, "text-left")}>
                 Activity
               </th>
-              <th className="px-3 py-2.5 text-xs font-medium text-muted-foreground text-right whitespace-nowrap">
-                Rate / acre
+              <th scope="col" className={cn(COL_HEAD, "pl-3 text-right")}>
+                Est. rate / acre
               </th>
-              <th className="px-3 py-2.5 text-xs font-medium text-muted-foreground text-right">
+              <th scope="col" className={cn(COL_HEAD, "pl-3 text-right")}>
                 Payment
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody>
             {items.map((item) => (
-              <tr key={item.code} className="bg-card">
-                <td className="px-3 py-2.5">
-                  <div>
-                    <span className="font-mono text-xs font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded mr-1.5">
-                      {item.code}
+              <tr key={item.code} className="border-b border-rule last:border-0">
+                <th
+                  scope="row"
+                  className="py-2 pr-3 text-left align-top font-normal"
+                >
+                  <span className="block text-sm text-foreground">
+                    {item.name}
+                  </span>
+                  <span className="mt-1 inline-flex items-center gap-2">
+                    <Stamp>{practiceStandardStamp(item.practice_standard_code)}</Stamp>
+                    <span className="sr-only">
+                      NRCS practice standard {item.practice_standard_code}
                     </span>
-                    <span className="text-foreground">{item.name}</span>
-                  </div>
-                  {item.is_bundle && (
-                    <span className="mt-0.5 inline-block text-xs text-amber-600 font-medium">
-                      Bundle rate (115%)
+                  </span>
+                  {item.higher_payment && (
+                    <span
+                      className={cn(
+                        "mt-1 block text-xs font-medium",
+                        toneTextClasses.warning
+                      )}
+                    >
+                      Higher payment
+                      {item.higher_payment_category
+                        ? `: ${item.higher_payment_category}`
+                        : ""}
                     </span>
                   )}
-                </td>
-                <td className="px-3 py-2.5 text-right text-muted-foreground whitespace-nowrap">
-                  ${item.base_rate.toFixed(2)}
-                  {item.is_bundle && (
-                    <span className="ml-1 text-xs text-amber-600">
-                      x{item.multiplier}
-                    </span>
+                </th>
+                <td className="py-2 pl-3 text-right align-top font-mono text-sm whitespace-nowrap text-muted-foreground">
+                  ${item.rate_per_acre.toFixed(2)}/ac
+                  {item.rate_is_estimate && (
+                    <span aria-label="estimate">*</span>
                   )}
                 </td>
-                <td className="px-3 py-2.5 text-right font-medium text-foreground whitespace-nowrap">
-                  ${item.payment.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                <td className="py-2 pl-3 text-right align-top font-mono text-sm whitespace-nowrap text-foreground">
+                  {formatUsd(item.payment)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <p className="text-xs text-muted-foreground">* {rateBasis}.</p>
     </div>
   );
 }
@@ -110,7 +139,7 @@ function EnhancementTable({
 
 interface CSPPaymentSummaryProps {
   payment: CSPPaymentEstimate;
-  /** Compact mode for dashboard widget — hides table */
+  /** Compact mode for the overview: totals only, no line-by-line ticket */
   compact?: boolean;
 }
 
@@ -119,115 +148,128 @@ export function CSPPaymentSummary({
   compact = false,
 }: CSPPaymentSummaryProps) {
   const {
+    fiscal_year,
     eap_annual,
-    enap_annual,
-    capped_annual,
+    activity_payment_annual,
+    annual_total,
     contract_5yr_total,
+    contract_years,
     per_acre_annual,
     total_cropland_acres,
     rc_count_above_threshold,
-    min_applied,
-    max_applied,
-    enhancement_breakdown,
+    contract_limit_label,
+    contract_limit_applied,
+    eap_label,
+    annual_payment_limit,
+    activity_breakdown,
+    activity_rate_basis,
+    rules,
     disclaimer,
   } = payment;
 
   return (
-    <div className="space-y-5">
-      {/* Hero numbers */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-center">
-          <p className="text-xs font-medium text-muted-foreground">Per year</p>
-          <p className="font-heading text-2xl font-bold text-primary leading-tight">
-            ${capped_annual.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </p>
-          <p className="text-xs text-muted-foreground">estimated</p>
+    <div className="space-y-6">
+      {/* The ticket */}
+      <div>
+        <RuleHead
+          label="Estimated payment"
+          action={<Stamp>FY{fiscal_year}</Stamp>}
+        />
+
+        <div className="mt-1">
+          {!compact && (
+            <div>
+              <LedgerRow
+                label="Existing Activity Payment (EAP)"
+                note={`Fixed payment per contract each year (${eap_label})`}
+                value={formatUsd(eap_annual)}
+              />
+              <LedgerRow
+                label="Conservation activity payments"
+                note="Estimated from per-acre rates for the activities below"
+                value={formatUsd(activity_payment_annual)}
+              />
+            </div>
+          )}
+
+          {/* The total, set above the rule the way a ticket foots up */}
+          <div className="border-t border-rule-strong pt-1">
+            <LedgerRow
+              label="Total estimated each year"
+              value={
+                <span className="font-mono text-2xl leading-none font-medium text-foreground">
+                  {formatUsd(annual_total)}
+                </span>
+              }
+            />
+            <LedgerRow
+              label={`Total estimated over the ${contract_years}-year contract`}
+              note={
+                contract_limit_applied
+                  ? `Capped at the ${contract_limit_label}`
+                  : `Annual payment x ${contract_years} years`
+              }
+              value={formatUsd(contract_5yr_total)}
+            />
+            <LedgerRow
+              label="Per acre each year"
+              value={`$${per_acre_annual.toFixed(2)}/ac`}
+            />
+          </div>
+
+          {!compact && (
+            <div className="mt-1 border-t border-rule pt-1">
+              <LedgerRow
+                label="Cropland acres in the estimate"
+                value={formatAcres(total_cropland_acres, { short: true })}
+              />
+              <LedgerRow
+                label="Conservation areas met"
+                value={`${rc_count_above_threshold}`}
+              />
+            </div>
+          )}
         </div>
-        <div className="rounded-xl border border-border bg-card p-4 text-center">
-          <p className="text-xs font-medium text-muted-foreground">5-year total</p>
-          <p className="font-heading text-2xl font-bold text-foreground leading-tight">
-            ${contract_5yr_total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </p>
-          <p className="text-xs text-muted-foreground">over contract</p>
-        </div>
-        <div className="col-span-2 sm:col-span-1 rounded-xl border border-border bg-card p-4 text-center">
-          <p className="text-xs font-medium text-muted-foreground">Per acre</p>
-          <p className="font-heading text-2xl font-bold text-foreground leading-tight">
-            ${per_acre_annual.toFixed(2)}
-          </p>
-          <p className="text-xs text-muted-foreground">per year</p>
-        </div>
+
+        <p className="mt-2 text-xs text-muted-foreground">
+          Estimate — not an official NRCS determination.
+        </p>
       </div>
 
-      {/* Cap notice */}
-      {(min_applied || max_applied) && (
-        <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5 text-sm text-amber-700">
-          {min_applied
-            ? "USDA minimum payment floor of $4,000/year applied."
-            : "USDA maximum payment cap of $50,000/year applied."}
-        </p>
+      {/* Contract limit notice */}
+      {contract_limit_applied && (
+        <EdgeNote
+          tone="warning"
+          title={`${contract_years}-year total capped at the ${contract_limit_label}.`}
+        />
       )}
 
-      {/* Payment breakdown */}
+      {/* Program limits, printed verbatim from the rules block */}
+      <div className="space-y-2">
+        <RuleHead label="Program limits" />
+        <ul className="space-y-1" aria-label="CSP program limits">
+          <li className="font-mono text-xs text-foreground">
+            {contract_limit_label}
+          </li>
+          <li className="font-mono text-xs text-foreground">{eap_label}</li>
+          {annual_payment_limit === null && (
+            <li className="font-mono text-xs text-foreground">
+              No annual payment limit
+            </li>
+          )}
+        </ul>
+        <CSPRulesCitation rules={rules} />
+      </div>
+
+      {/* Activity table */}
       {!compact && (
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-                <DollarSign className="h-4 w-4 text-primary" aria-hidden="true" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  Payment breakdown
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {total_cropland_acres.toLocaleString()} acres &middot;{" "}
-                  {rc_count_above_threshold} conservation areas met
-                </p>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="pt-3">
-            <div className="divide-y divide-border">
-              <PaymentRow
-                label="Existing Activity Payment (EAP)"
-                sublabel={`$2.65/acre x ${total_cropland_acres} acres x ${rc_count_above_threshold} areas`}
-                amount={eap_annual}
-              />
-              <PaymentRow
-                label="Enhancement Activity Payment (EnAP)"
-                sublabel="Sum of all selected enhancement activities"
-                amount={enap_annual}
-              />
-              <PaymentRow
-                label="Total estimated annual payment"
-                amount={capped_annual}
-                highlight
-              />
-              <PaymentRow
-                label="Total estimated over 5-year contract"
-                sublabel="Annual payment x 5 years"
-                amount={contract_5yr_total}
-                highlight
-              />
-            </div>
-          </CardContent>
-        </Card>
+        <ActivityTable items={activity_breakdown} rateBasis={activity_rate_basis} />
       )}
-
-      {/* Enhancement table */}
-      {!compact && <EnhancementTable items={enhancement_breakdown} />}
 
       {/* Disclaimer */}
-      <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-3">
-        <Info
-          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {disclaimer}
-        </p>
-      </div>
+      <p className="border-t border-rule pt-3 text-xs leading-relaxed text-muted-foreground">
+        {disclaimer}
+      </p>
     </div>
   );
 }

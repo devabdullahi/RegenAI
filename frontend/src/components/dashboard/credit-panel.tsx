@@ -1,160 +1,74 @@
-import Link from "next/link";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ButtonLink } from "@/components/shared/button-link";
+import { Stamp } from "@/components/shared/record";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FileText, Leaf, CheckCircle2, Clock, XCircle, ChevronRight } from "lucide-react";
-import type { CreditEligibility } from "@/lib/api/types";
+import { type Tone } from "@/lib/status-styles";
+import type { CreditEligibility, CreditStatus } from "@/lib/api/types";
 
-function StatusBadge({ status }: { status: CreditEligibility["status"] }) {
-  if (status === "eligible") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-semibold text-green-700">
-        <CheckCircle2 className="h-3 w-3" />
-        Eligible
-      </span>
-    );
-  }
-  if (status === "pending_review") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
-        <Clock className="h-3 w-3" />
-        Pending Review
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-semibold text-red-700">
-      <XCircle className="h-3 w-3" />
-      Not Eligible
-    </span>
-  );
+const STATUS_STAMP: Record<CreditStatus, { label: string; tone: Tone }> = {
+  eligible: { label: "Eligible", tone: "success" },
+  pending_review: { label: "Pending review", tone: "warning" },
+  not_eligible: { label: "Not eligible", tone: "destructive" },
+};
+
+function creditsHref(farmId?: string): string {
+  return farmId ? `/credits?farm_id=${encodeURIComponent(farmId)}` : "/credits";
 }
 
-function EqipCard({
+/** One program, printed as a row on the sheet: name, status, notes, next step. */
+function ProgramRow({
+  name,
+  description,
   credit,
+  action,
   farmId,
 }: {
+  name: string;
+  description: string;
   credit: CreditEligibility;
+  action: string;
   farmId?: string;
 }) {
-  const creditsHref = farmId ? `/credits?farm_id=${farmId}` : "/credits";
+  const status = STATUS_STAMP[credit.status];
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <FileText className="h-4 w-4 text-primary" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-foreground">EQIP</p>
-            <p className="text-xs text-muted-foreground">
-              Environmental Quality Incentives
-            </p>
-          </div>
+    <div className="py-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-heading text-base font-semibold text-foreground">
+            {name}
+          </p>
+          <p className="text-xs text-muted-foreground">{description}</p>
         </div>
-        <StatusBadge status={credit.status} />
+        <Stamp tone={status.tone}>{status.label}</Stamp>
       </div>
 
       {credit.practices_documented.length > 0 && (
-        <div>
-          <p className="text-xs font-medium text-muted-foreground mb-1.5">
+        <div className="mt-3">
+          <p className="font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase">
             Documented practices
           </p>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
             {credit.practices_documented.map((code) => (
-              <span
-                key={code}
-                className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-mono font-medium text-foreground"
-              >
-                Practice {code}
-              </span>
+              <Stamp key={code}>Practice {code}</Stamp>
             ))}
           </div>
         </div>
       )}
 
       {credit.notes && (
-        <p className="text-sm text-muted-foreground leading-relaxed">
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           {credit.notes}
         </p>
       )}
 
-      <Link href={creditsHref}>
-        <Button
-          variant="outline"
-          className="w-full min-h-[48px] cursor-pointer text-primary border-primary/30 hover:bg-primary/5 hover:border-primary"
-        >
-          View EQIP Details
-          <ChevronRight className="ml-1 h-4 w-4" />
-        </Button>
-      </Link>
-    </div>
-  );
-}
-
-function VcmCard({
-  credit,
-  farmId,
-}: {
-  credit: CreditEligibility;
-  farmId?: string;
-}) {
-  const creditsHref = farmId ? `/credits?farm_id=${farmId}` : "/credits";
-
-  // Parse estimated credits from notes (e.g., "Estimated 1.2 carbon credits per acre")
-  const creditMatch = credit.notes.match(/(\d+\.?\d*)\s+carbon credits? per acre/i);
-  const creditsPerAcre = creditMatch ? creditMatch[1] : null;
-
-  return (
-    <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/10">
-            <Leaf className="h-4 w-4 text-accent" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-foreground">
-              Voluntary Carbon Markets
-            </p>
-            <p className="text-xs text-muted-foreground">VCM credits</p>
-          </div>
-        </div>
-        <StatusBadge status={credit.status} />
-      </div>
-
-      {creditsPerAcre && (
-        <div className="rounded-lg bg-accent/5 border border-accent/20 px-3 py-2.5">
-          <p className="text-xs text-muted-foreground">Estimated yield</p>
-          <p className="text-lg font-bold text-foreground leading-tight">
-            {creditsPerAcre}{" "}
-            <span className="text-sm font-medium text-muted-foreground">
-              carbon credits / acre
-            </span>
-          </p>
-        </div>
-      )}
-
-      {credit.notes && (
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          {credit.notes}
-        </p>
-      )}
-
-      <Link href={creditsHref}>
-        <Button
-          className="w-full min-h-[48px] bg-accent text-accent-foreground hover:bg-accent/90 cursor-pointer"
-        >
-          Learn More
-          <ChevronRight className="ml-1 h-4 w-4" />
-        </Button>
-      </Link>
+      <ButtonLink
+        href={creditsHref(farmId)}
+        variant="outline"
+        size="sm"
+        className="mt-3"
+      >
+        {action}
+      </ButtonLink>
     </div>
   );
 }
@@ -172,14 +86,33 @@ export function CreditPanel({ credits, farmId }: CreditPanelProps) {
   const eqip = credits.find((c) => c.program === "EQIP");
   const vcm = credits.find((c) => c.program === "VCM");
 
+  if (!eqip && !vcm) {
+    return (
+      <p className="py-4 text-sm text-muted-foreground">
+        No program data available for this farm yet.
+      </p>
+    );
+  }
+
   return (
-    <div className="space-y-3">
-      {eqip && <EqipCard credit={eqip} farmId={farmId} />}
-      {vcm && <VcmCard credit={vcm} farmId={farmId} />}
-      {!eqip && !vcm && (
-        <p className="text-sm text-muted-foreground text-center py-4">
-          No program data available for this farm yet.
-        </p>
+    <div className="divide-y divide-border">
+      {eqip && (
+        <ProgramRow
+          name="EQIP"
+          description="Environmental Quality Incentives (cost-share program)"
+          credit={eqip}
+          action="View EQIP details"
+          farmId={farmId}
+        />
+      )}
+      {vcm && (
+        <ProgramRow
+          name="Voluntary Carbon Markets"
+          description="VCM credits"
+          credit={vcm}
+          action="Learn more"
+          farmId={farmId}
+        />
       )}
     </div>
   );
@@ -187,22 +120,13 @@ export function CreditPanel({ credits, farmId }: CreditPanelProps) {
 
 export function CreditPanelEmpty() {
   return (
-    <div className="space-y-3">
+    <div className="divide-y divide-border">
       {["EQIP", "VCM"].map((label) => (
-        <div
-          key={label}
-          className="rounded-xl border border-border bg-card p-4 space-y-3"
-        >
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-8 w-8 rounded-lg" />
-            <div className="space-y-1">
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-3 w-36" />
-            </div>
-          </div>
-          <Skeleton className="h-3 w-full" />
-          <Skeleton className="h-3 w-4/5" />
-          <Skeleton className="h-12 w-full rounded-lg" />
+        <div key={label} className="space-y-2 py-4">
+          <Skeleton className="h-4 w-24 rounded-sm" />
+          <Skeleton className="h-3 w-56 rounded-sm" />
+          <Skeleton className="h-3 w-4/5 rounded-sm" />
+          <Skeleton className="h-9 w-40 rounded-sm" />
         </div>
       ))}
     </div>

@@ -1,3 +1,7 @@
+"""
+Health router for RegenAI: unversioned GET /health for load balancers.
+"""
+
 import logging
 
 from fastapi import APIRouter
@@ -24,8 +28,9 @@ async def health_check():
         client = get_supabase_client()
         client.table("eqip_practices").select("code").limit(1).execute()
         checks["supabase"] = "ok"
-    except Exception:
-        logger.warning("Health check: Supabase connectivity failed")
+    except Exception as exc:
+        # Intentionally non-fatal: the probe reports 503 instead of crashing.
+        logger.warning("Health check: Supabase connectivity failed error=%s", exc)
         checks["supabase"] = "error"
         healthy = False
 

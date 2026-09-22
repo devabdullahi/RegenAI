@@ -946,3 +946,193 @@ class TestCreateYieldHistory:
             await create_yield_history(data, mock)
 
         assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Write-path fixes: column mapping, yield sync, error mapping, shared rules
+# ---------------------------------------------------------------------------
+
+_PINNED_TODAY = date(2026, 9, 13)
+_ACT_UUID = UUID("12345678-1234-5678-1234-000000000001")
+_FIELD_ROW_WITH_CROP = {**_FIELD_ROW_A, "crop_type": "corn"}
+
+
+def _db_error(code: str = "XX000") -> "APIError":
+    from postgrest.exceptions import APIError
+
+    return APIError({"message": "boom", "code": code, "hint": None, "details": None})
+
+
+@pytest.fixture
+def pinned_today():
+    with patch("app.services.activity_log.helpers._today", return_value=_PINNED_TODAY):
+        yield
+
+
+class TestCheckRules:
+    def test_future_date_uses_injectable_clock(self, pinned_today):
+        from app.services.activity_log.helpers import _check_rules
+
+        common = dict(
+            activity_type="plant", restricted_use=False, applicator_name=None,
+            applicator_license=None, acres_applied=None, field_acres=None,
+        )
+        _check_rules(activity_date=_PINNED_TODAY, **common)  # today is allowed
+        with pytest.raises(HTTPException) as exc_info:
+            _check_rules(activity_date=date(2026, 9, 14), **common)
+        assert exc_info.value.status_code == 422
+
+    def test_restricted_spray_and_acreage(self, pinned_today):
+        from app.services.activity_log.helpers import _check_rules
+
+        with pytest.raises(HTTPException):
+            _check_rules(
+                activity_type="spray", activity_date=None, restricted_use=True,
+                applicator_name="A", applicator_license=None, acres_applied=None,
+                field_acres=None,
+            )
+        with pytest.raises(HTTPException) as exc_info:
+            _check_rules(
+                activity_type="plant", activity_date=None, restricted_use=False,
+                applicator_name=None, applicator_license=None, acres_applied=121,
+                field_acres=120,
+            )
+        assert "acres" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+class TestErrorMapping:
+    async def test_get_activity_no_rows_is_404(self):
+        from app.services.activity_log import get_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_activity(_ACT_UUID, FakeSupabase(rows={"field_activities": []}))
+        assert exc_info.value.status_code == 404
+
+    async def test_get_activity_db_error_is_500(self):
+        from app.services.activity_log import get_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(errors={("field_activities", "select"): _db_error()})
+        with pytest.raises(HTTPException) as exc_info:
+            await get_activity(_ACT_UUID, supabase)
+        assert exc_info.value.status_code == 500
+
+    async def test_field_lookup_db_error_is_500(self):
+        from app.services.activity_log.helpers import _assert_field_access
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(errors={("fields", "select"): _db_error()})
+        with pytest.raises(HTTPException) as exc_info:
+            await _assert_field_access(_FIELD_UUID_A, supabase)
+        assert exc_info.value.status_code == 500
+
+
+@pytest.mark.asyncio
+class TestWritePaths:
+    async def test_create_maps_pest_disease_found_to_pest_name(self, pinned_today):
+        from app.services.activity_log import create_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(rows={"fields": [_FIELD_ROW_A]})
+        data = ActivityCreate(
+            field_id=_FIELD_UUID_A, activity_type=ActivityType.scout,
+            activity_date=date(2026, 9, 1), pest_disease_found="aphid",
+        )
+
+        row, _ = await create_activity(data, supabase)
+
+        (payload,) = supabase.writes_for("field_activities", "insert")
+        assert payload["pest_name"] == "aphid"
+        assert "pest_disease_found" not in payload
+        assert payload["field_id"] == _FIELD_ID_A_STR
+        assert row["pest_disease_found"] == "aphid"
+        assert "pest_name" not in row
+
+    async def test_harvest_yield_sync_includes_crop_type(self, pinned_today):
+        from app.services.activity_log import create_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(rows={"fields": [_FIELD_ROW_WITH_CROP]})
+        data = ActivityCreate(
+            field_id=_FIELD_UUID_A, activity_type=ActivityType.harvest,
+            activity_date=date(2026, 9, 1), yield_bu_acre=200, crop_year=2026,
+        )
+
+        _, warnings = await create_activity(data, supabase)
+
+        (yield_payload,) = supabase.writes_for("yield_history", "upsert")
+        assert yield_payload["crop_type"] == "corn"
+        assert warnings == []
+
+    async def test_harvest_yield_sync_failure_returns_warning_and_logs(
+        self, pinned_today, caplog
+    ):
+        from app.services.activity_log import create_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(
+            rows={"fields": [_FIELD_ROW_WITH_CROP]},
+            errors={("yield_history", "upsert"): _db_error()},
+        )
+        data = ActivityCreate(
+            field_id=_FIELD_UUID_A, activity_type=ActivityType.harvest,
+            activity_date=date(2026, 9, 1), yield_bu_acre=200, crop_year=2026,
+        )
+
+        with caplog.at_level("WARNING"):
+            _, warnings = await create_activity(data, supabase)
+
+        assert len(warnings) == 1 and "yield history" in warnings[0]
+        assert any(r.exc_info for r in caplog.records if "sync failed" in r.getMessage())
+
+    async def test_harvest_without_field_crop_type_warns(self, pinned_today):
+        from app.services.activity_log import create_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        supabase = FakeSupabase(rows={"fields": [{**_FIELD_ROW_A, "crop_type": None}]})
+        data = ActivityCreate(
+            field_id=_FIELD_UUID_A, activity_type=ActivityType.harvest,
+            activity_date=date(2026, 9, 1), yield_bu_acre=200, crop_year=2026,
+        )
+
+        _, warnings = await create_activity(data, supabase)
+
+        assert supabase.writes_for("yield_history", "upsert") == []
+        assert len(warnings) == 1
+
+    async def test_update_maps_columns_and_logs_skipped_acreage_check(
+        self, pinned_today, caplog
+    ):
+        from app.services.activity_log import update_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        existing = {**_ACTIVITY_ROW, "id": str(_ACT_UUID)}
+        # Field lookup returns no rows: acreage rule is skipped, with a log line.
+        supabase = FakeSupabase(rows={"field_activities": [existing], "fields": []})
+
+        with caplog.at_level("WARNING"):
+            row = await update_activity(
+                _ACT_UUID,
+                ActivityUpdate(pest_disease_found="mites", acres_applied=10),
+                supabase,
+            )
+
+        (payload,) = supabase.writes_for("field_activities", "update")
+        assert payload["pest_name"] == "mites"
+        assert row["pest_disease_found"] == "mites"
+        assert any(str(_ACT_UUID) in r.getMessage() for r in caplog.records)
+
+    async def test_update_db_error_is_500(self, pinned_today):
+        from app.services.activity_log import update_activity
+        from tests.test_schema_drift import FakeSupabase
+
+        existing = {**_ACTIVITY_ROW, "id": str(_ACT_UUID)}
+        supabase = FakeSupabase(
+            rows={"field_activities": [existing]},
+            errors={("field_activities", "update"): _db_error()},
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await update_activity(_ACT_UUID, ActivityUpdate(notes="x"), supabase)
+        assert exc_info.value.status_code == 500

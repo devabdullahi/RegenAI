@@ -1,70 +1,19 @@
 "use client";
 
-import { Sprout, Droplets, FlaskConical, Eye, Wheat } from "lucide-react";
+import { ACTIVITY_TYPES } from "@/lib/activity-types";
 import { cn } from "@/lib/utils";
 import type { ActivityType } from "@/lib/api/types";
 
-const ACTIVITY_TYPES: {
-  type: ActivityType;
-  label: string;
-  description: string;
-  icon: React.ElementType;
-  bg: string;
-  selectedBg: string;
-  selectedBorder: string;
-  iconColor: string;
-}[] = [
-  {
-    type: "plant",
-    label: "Planting",
-    description: "Record what you put in the ground",
-    icon: Sprout,
-    bg: "hover:bg-green-50",
-    selectedBg: "bg-green-50",
-    selectedBorder: "border-green-400",
-    iconColor: "text-green-600",
-  },
-  {
-    type: "spray",
-    label: "Spray",
-    description: "Herbicide, insecticide, or fungicide",
-    icon: Droplets,
-    bg: "hover:bg-blue-50",
-    selectedBg: "bg-blue-50",
-    selectedBorder: "border-blue-400",
-    iconColor: "text-blue-600",
-  },
-  {
-    type: "fertilize",
-    label: "Fertilize",
-    description: "Nitrogen, phosphorus, potassium",
-    icon: FlaskConical,
-    bg: "hover:bg-amber-50",
-    selectedBg: "bg-amber-50",
-    selectedBorder: "border-amber-400",
-    iconColor: "text-amber-600",
-  },
-  {
-    type: "scout",
-    label: "Scouting",
-    description: "Pest, disease, or weed check",
-    icon: Eye,
-    bg: "hover:bg-purple-50",
-    selectedBg: "bg-purple-50",
-    selectedBorder: "border-purple-400",
-    iconColor: "text-purple-600",
-  },
-  {
-    type: "harvest",
-    label: "Harvest",
-    description: "Yield, moisture, and ticket info",
-    icon: Wheat,
-    bg: "hover:bg-orange-50",
-    selectedBg: "bg-orange-50",
-    selectedBorder: "border-orange-400",
-    iconColor: "text-orange-600",
-  },
-];
+const DESCRIPTIONS: Record<ActivityType, string> = {
+  plant: "Record what you put in the ground",
+  spray: "Herbicide, insecticide, or fungicide",
+  fertilize: "Nitrogen, phosphorus, potassium",
+  scout: "Pest, disease, or weed check",
+  harvest: "Yield, moisture, and ticket info",
+  tillage: "Chisel, disk, strip-till, or other passes",
+  cover_crop: "Seeding a cover crop",
+  other: "Anything else worth recording",
+};
 
 interface ActivityTypePickerProps {
   value: ActivityType | null;
@@ -75,39 +24,36 @@ export function ActivityTypePicker({ value, onChange }: ActivityTypePickerProps)
   return (
     <fieldset>
       <legend className="sr-only">Select activity type</legend>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {ACTIVITY_TYPES.map((item) => {
-          const isSelected = value === item.type;
-          const Icon = item.icon;
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {ACTIVITY_TYPES.map((config) => {
+          const isSelected = value === config.id;
+          const Icon = config.icon;
           return (
             <button
-              key={item.type}
+              key={config.id}
               type="button"
-              onClick={() => onChange(item.type)}
+              onClick={() => onChange(config.id)}
               aria-pressed={isSelected}
               className={cn(
-                "flex min-h-[72px] items-center gap-4 rounded-xl border-2 px-4 py-4 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex min-h-[64px] items-start gap-3 rounded-sm border px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
                 isSelected
-                  ? `${item.selectedBg} ${item.selectedBorder}`
-                  : `border-border bg-card ${item.bg}`
+                  ? "border-foreground bg-muted"
+                  : "border-border bg-card hover:bg-muted/50"
               )}
             >
-              <div
-                className={cn(
-                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
-                  isSelected ? "bg-white/70" : "bg-muted"
-                )}
-              >
-                <Icon className={cn("h-6 w-6", item.iconColor)} aria-hidden="true" />
-              </div>
-              <div>
-                <p className="text-base font-semibold text-foreground">
-                  {item.label}
-                </p>
-                <p className="text-sm text-muted-foreground leading-snug mt-0.5">
-                  {item.description}
-                </p>
-              </div>
+              {/* The mark helps a farmer find the right kind of work quickly. */}
+              <Icon
+                className={cn("mt-0.5 size-5 shrink-0", config.markerClasses)}
+                aria-hidden="true"
+              />
+              <span className="min-w-0">
+                <span className="block text-base font-semibold text-foreground">
+                  {config.label}
+                </span>
+                <span className="mt-0.5 block text-sm leading-snug text-muted-foreground">
+                  {DESCRIPTIONS[config.id]}
+                </span>
+              </span>
             </button>
           );
         })}

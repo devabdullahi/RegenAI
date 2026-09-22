@@ -1,12 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import {
-  Sprout,
   LayoutDashboard,
   Tractor,
   FileText,
@@ -15,19 +12,27 @@ import {
   ClipboardList,
   MoreHorizontal,
   X,
+  type LucideIcon,
 } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
-const STATIC_NAV_ITEMS = [
-  { href: "/farms", label: "My Farms", icon: Tractor },
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/activities", label: "Field Log", icon: ClipboardList },
-] as const;
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+}
 
-// The Earn Credits and Cost-Share links forward farm_id so those pages
-// know which farm to display without the user needing to pick again.
-const CREDITS_NAV_ITEM = { label: "Earn Credits", icon: FileText } as const;
-const CSP_NAV_ITEM = { label: "Cost-Share", icon: ShieldCheck } as const;
+const FARM_DETAIL_PATH = /^\/farms\/([^/]+)/;
+
+/**
+ * Link to a farm-specific page, forwarding the current farm. Pages read
+ * different param names: /dashboard reads `farm`, the rest read `farm_id`.
+ */
+function farmHref(path: string, param: "farm" | "farm_id", farmId: string | null) {
+  return farmId ? `${path}?${param}=${encodeURIComponent(farmId)}` : path;
+}
 
 export function DashboardNav({ userEmail }: { userEmail: string }) {
   const pathname = usePathname();
@@ -35,30 +40,31 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
   const router = useRouter();
   const [programsOpen, setProgramsOpen] = useState(false);
 
-  // Forward farm context (farm, farm_id) to farm-specific pages so they load
-  // the correct farm without the user needing to pick again.
+  // Farm context comes from the query string, or from the path on /farms/[id].
   const farmId =
     searchParams.get("farm_id") ??
     searchParams.get("farm") ??
+    pathname.match(FARM_DETAIL_PATH)?.[1] ??
     null;
-  const creditsHref = farmId ? `/credits?farm_id=${farmId}` : "/credits";
-  const cspHref = farmId ? `/csp?farm_id=${farmId}` : "/csp";
 
-  // Full nav list (desktop + tablet)
-  const allNavItems = [
-    ...STATIC_NAV_ITEMS,
-    { href: creditsHref, label: CREDITS_NAV_ITEM.label, icon: CREDITS_NAV_ITEM.icon },
-    { href: cspHref, label: CSP_NAV_ITEM.label, icon: CSP_NAV_ITEM.icon },
+  const coreItems: NavItem[] = [
+    { href: "/farms", label: "My Farms", icon: Tractor },
+    { href: farmHref("/dashboard", "farm", farmId), label: "Dashboard", icon: LayoutDashboard },
+    { href: farmHref("/activities", "farm_id", farmId), label: "Field Log", icon: ClipboardList },
   ];
+  const programItems: NavItem[] = [
+    { href: farmHref("/credits", "farm_id", farmId), label: "Earn Credits", icon: FileText },
+    { href: farmHref("/csp", "farm_id", farmId), label: "CSP", icon: ShieldCheck },
+  ];
+  const allNavItems = [...coreItems, ...programItems];
 
-  // Mobile shows max 4 items: 3 core items + a "Programs" overflow button
-  const mobileMainItems = STATIC_NAV_ITEMS;
-  const mobileProgramItems = [
-    { href: creditsHref, label: CREDITS_NAV_ITEM.label, icon: CREDITS_NAV_ITEM.icon },
-    { href: cspHref, label: CSP_NAV_ITEM.label, icon: CSP_NAV_ITEM.icon },
-  ];
-  const isProgramsActive =
-    pathname.startsWith("/credits") || pathname.startsWith("/csp");
+  // Match active state on the path only, not query params. /farms must not
+  // light up for every path that merely starts with "/farms".
+  function isActive(href: string) {
+    const basePath = href.split("?")[0] ?? href;
+    return pathname === basePath || pathname.startsWith(`${basePath}/`);
+  }
+  const isProgramsActive = programItems.some((item) => isActive(item.href));
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -67,32 +73,31 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b bg-card">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
-        <Link href="/farms" className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Sprout className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <span className="font-heading text-lg font-bold text-foreground">
+    <header className="sticky top-0 z-50 border-b border-border bg-card">
+      <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-1 sm:px-6 lg:px-8">
+        {/* Masthead: the name on the record, set as type, not as a logo tile. */}
+        <Link href="/farms" className="flex min-h-12 items-center">
+          <span className="font-heading text-lg font-semibold tracking-[-0.02em] text-foreground">
             RegenAI
           </span>
         </Link>
 
-        <nav className="hidden items-center gap-1 sm:flex" aria-label="Main navigation">
+        <nav className="hidden items-center gap-5 sm:flex" aria-label="Main navigation">
           {allNavItems.map((item) => {
-            // Match active state on the pathname segment only, not query params
-            const basePath = item.href.split("?")[0];
-            const isActive = pathname.startsWith(basePath);
+            const active = isActive(item.href);
             return (
               <Link
-                key={item.href}
+                key={item.label}
                 href={item.href}
-                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                aria-current={isActive ? "page" : undefined}
+                className={cn(
+                  // Active is a 2px rule under the word, the way a form marks
+                  // the part being filled in.
+                  "flex min-h-12 items-center gap-2 border-b-2 px-0.5 text-sm font-medium transition-colors",
+                  active
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                )}
+                aria-current={active ? "page" : undefined}
               >
                 <item.icon className="h-4 w-4" aria-hidden="true" />
                 {item.label}
@@ -101,8 +106,8 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
           })}
         </nav>
 
-        <div className="flex items-center gap-2">
-          <span className="hidden text-sm text-muted-foreground sm:inline">
+        <div className="flex items-center gap-3">
+          <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
             {userEmail}
           </span>
           <Button
@@ -110,47 +115,48 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
             size="icon"
             onClick={handleSignOut}
             aria-label="Sign out"
-            className="cursor-pointer"
+            className="size-12 cursor-pointer"
           >
-            <LogOut className="h-4 w-4" aria-hidden="true" />
+            <LogOut className="h-5 w-5" aria-hidden="true" />
           </Button>
         </div>
       </div>
 
       {/* Mobile bottom nav — max 4 items: 3 core + Programs overflow */}
       <nav
-        className="fixed bottom-0 left-0 right-0 z-50 border-t bg-card sm:hidden"
+        className="fixed right-0 bottom-0 left-0 z-50 border-t border-border bg-card sm:hidden"
         aria-label="Mobile navigation"
       >
-        {/* Programs sub-menu drawer — slides up above the bottom nav */}
+        {/* Programs sub-menu drawer — opens above the bottom nav */}
         {programsOpen && (
-          <div className="border-t bg-card px-4 py-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div id="mobile-programs-menu" className="border-t border-border bg-card px-4 py-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase">
                 Programs
               </span>
               <button
+                type="button"
                 onClick={() => setProgramsOpen(false)}
                 aria-label="Close programs menu"
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                className="flex size-12 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
               >
-                <X className="h-4 w-4" aria-hidden="true" />
+                <X className="h-5 w-5" aria-hidden="true" />
               </button>
             </div>
-            {mobileProgramItems.map((item) => {
-              const basePath = item.href.split("?")[0];
-              const isActive = pathname.startsWith(basePath);
+            {programItems.map((item) => {
+              const active = isActive(item.href);
               return (
                 <Link
-                  key={item.href}
+                  key={item.label}
                   href={item.href}
                   onClick={() => setProgramsOpen(false)}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition-colors ${
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  aria-current={isActive ? "page" : undefined}
+                  className={cn(
+                    "flex min-h-12 items-center gap-3 border-l-2 px-3 py-3 text-sm font-medium transition-colors",
+                    active
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                  aria-current={active ? "page" : undefined}
                 >
                   <item.icon className="h-5 w-5" aria-hidden="true" />
                   {item.label}
@@ -159,22 +165,24 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
             })}
           </div>
         )}
-        <div className="flex items-center justify-around py-2">
-          {mobileMainItems.map((item) => {
-            const basePath = item.href.split("?")[0];
-            const isActive = pathname.startsWith(basePath);
+        <div className="flex items-stretch justify-around">
+          {coreItems.map((item) => {
+            const active = isActive(item.href);
             return (
               <Link
-                key={item.href}
+                key={item.label}
                 href={item.href}
-                className={`flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 px-3 py-1 text-xs font-medium ${
-                  isActive ? "text-primary" : "text-muted-foreground"
-                }`}
-                aria-current={isActive ? "page" : undefined}
+                className={cn(
+                  "flex min-h-12 min-w-12 flex-col items-center justify-center gap-0.5 border-t-2 px-3 py-2 text-xs font-medium transition-colors",
+                  active
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground"
+                )}
+                aria-current={active ? "page" : undefined}
               >
                 <item.icon className="h-6 w-6 shrink-0" aria-hidden="true" />
                 {/* Label hidden below 480px (icon-only tab bar), visible above */}
-                <span className="hidden min-[480px]:inline leading-tight">{item.label}</span>
+                <span className="hidden leading-tight min-[480px]:inline">{item.label}</span>
                 {/* Screen-reader label always present so icon-only mode stays accessible */}
                 <span className="sr-only min-[480px]:hidden">{item.label}</span>
               </Link>
@@ -182,16 +190,19 @@ export function DashboardNav({ userEmail }: { userEmail: string }) {
           })}
           {/* Programs overflow trigger — 4th mobile tab */}
           <button
+            type="button"
             onClick={() => setProgramsOpen((prev) => !prev)}
             aria-expanded={programsOpen}
-            aria-haspopup="true"
-            aria-label="Open programs menu"
-            className={`flex min-h-[44px] min-w-[44px] flex-col items-center justify-center gap-0.5 px-3 py-1 text-xs font-medium cursor-pointer transition-colors ${
-              isProgramsActive || programsOpen ? "text-primary" : "text-muted-foreground"
-            }`}
+            aria-controls="mobile-programs-menu"
+            className={cn(
+              "flex min-h-12 min-w-12 cursor-pointer flex-col items-center justify-center gap-0.5 border-t-2 px-3 py-2 text-xs font-medium transition-colors",
+              isProgramsActive || programsOpen
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground"
+            )}
           >
             <MoreHorizontal className="h-6 w-6 shrink-0" aria-hidden="true" />
-            <span className="hidden min-[480px]:inline leading-tight">Programs</span>
+            <span className="hidden leading-tight min-[480px]:inline">Programs</span>
             <span className="sr-only min-[480px]:hidden">Programs</span>
           </button>
         </div>

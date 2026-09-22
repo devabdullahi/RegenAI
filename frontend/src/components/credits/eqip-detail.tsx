@@ -1,22 +1,24 @@
 "use client";
 
 import { toast } from "sonner";
-import { CheckCircle2, Circle, Download, FileText, ExternalLink } from "lucide-react";
+import { Download, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EdgeNote, LedgerRow, RuleHead, Stamp } from "@/components/shared/record";
 import type { CreditEligibility } from "@/lib/api/types";
 
-// EQIP practice codes and their plain-English names
-// These represent all practices eligible in the Midwest/Iowa context
-const EQIP_PRACTICE_CATALOG: Record<string, string> = {
-  "340": "Cover crops — plant a cash crop's offseason to build soil",
-  "329": "No-till or reduced tillage — leave soil undisturbed",
-  "590": "Nutrient management plan — apply fertilizer by soil test",
-  "600": "Pest management — reduce chemical inputs with IPM",
+const EQIP_PROGRAM_URL =
+  "https://www.nrcs.usda.gov/programs-initiatives/eqip-environmental-quality-incentives";
+
+// Common row-crop conservation practices (NRCS practice standard code -> plain
+// name). This is a reference list, not a per-farm eligibility result: the API
+// does not return which practices a farm is eligible for yet.
+const COMMON_EQIP_PRACTICES: Record<string, string> = {
+  "340": "Cover crops — plant a crop in the off-season to protect and build soil",
+  "329": "No-till — leave crop residue and skip tillage",
+  "590": "Nutrient management — apply fertilizer based on soil tests",
+  "595": "Pest management — plan pest control to cut risk and chemical use",
   "393": "Filter strips — grass buffers along waterways",
   "412": "Grassed waterways — stabilize drainage channels",
-  "484": "Mulching — protect soil with organic material",
-  "528": "Prescribed grazing plan — rotate livestock across pastures",
 };
 
 interface EqipPracticeRowProps {
@@ -25,53 +27,47 @@ interface EqipPracticeRowProps {
   documented: boolean;
 }
 
+/** One line of the plan sheet: the stamped code, what it is, whether it is on file. */
 function EqipPracticeRow({ code, name, documented }: EqipPracticeRowProps) {
   return (
-    <li className="flex items-start gap-3 py-3 border-b border-border last:border-0">
-      <div className="mt-0.5 shrink-0">
-        {documented ? (
-          <CheckCircle2
-            className="h-5 w-5 text-primary"
-            aria-hidden="true"
-          />
-        ) : (
-          <Circle
-            className="h-5 w-5 text-muted-foreground"
-            aria-hidden="true"
-          />
-        )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <span className="font-mono text-xs font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-            {code}
-          </span>
-          <span
-            className={`text-sm leading-snug ${
-              documented ? "text-foreground font-medium" : "text-muted-foreground"
-            }`}
-          >
-            {name}
-          </span>
-        </div>
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border py-3">
+      <Stamp className="shrink-0">CPS {code}</Stamp>
+
+      <div className="min-w-0 flex-1">
+        <p
+          className={
+            documented
+              ? "text-sm leading-snug font-medium text-foreground"
+              : "text-sm leading-snug text-muted-foreground"
+          }
+        >
+          {name}
+        </p>
         {!documented && (
           <a
-            href="https://www.nrcs.usda.gov/programs-initiatives/eqip-environmental-quality-incentives"
+            href={EQIP_PROGRAM_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent/80 underline underline-offset-2 min-h-[44px] sm:min-h-0 py-1"
+            className="inline-flex min-h-12 items-center gap-1 text-sm font-medium text-primary underline underline-offset-2 hover:text-accent"
             aria-label={`Take action on practice ${code}`}
           >
             Take action
             <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            <span className="sr-only">(opens in new tab)</span>
           </a>
         )}
       </div>
-      {documented && (
-        <span className="shrink-0 text-xs font-medium text-primary bg-primary/10 rounded-full px-2 py-0.5 self-center">
-          Done
-        </span>
-      )}
+
+      {/* The word carries the status, never the color on its own. */}
+      <span
+        className={
+          documented
+            ? "font-mono text-[0.6875rem] tracking-[0.08em] text-success uppercase"
+            : "font-mono text-[0.6875rem] tracking-[0.08em] text-muted-foreground uppercase"
+        }
+      >
+        {documented ? "Documented" : "Not documented"}
+      </span>
     </li>
   );
 }
@@ -81,16 +77,15 @@ interface EqipDetailProps {
 }
 
 export function EqipDetail({ credit }: EqipDetailProps) {
-  // Determine which eligible practices are in the catalog
-  // Documented = farmer has acted on them already
   const documentedCodes = new Set(credit.practices_documented);
+  // Reference list plus anything the farmer documented that isn't on it.
+  const practiceCodes = Array.from(
+    new Set([...Object.keys(COMMON_EQIP_PRACTICES), ...credit.practices_documented])
+  );
 
-  // All practice codes relevant to this farm (documented + a few more to show as eligible but pending)
-  // In production this comes from the backend eligibility assessment
-  const eligibleCodes = Object.keys(EQIP_PRACTICE_CATALOG).slice(0, 6);
-
-  const documentedCount = eligibleCodes.filter((code) => documentedCodes.has(code)).length;
-  const totalCount = eligibleCodes.length;
+  const documentedCount = practiceCodes.filter((code) => documentedCodes.has(code)).length;
+  const totalCount = practiceCodes.length;
+  const documentedPct = totalCount > 0 ? Math.round((documentedCount / totalCount) * 100) : 0;
 
   function handleDownload() {
     toast.info("PDF generation coming soon", {
@@ -99,93 +94,75 @@ export function EqipDetail({ credit }: EqipDetailProps) {
   }
 
   return (
-    <section aria-labelledby="eqip-heading" className="space-y-4">
-      {/* Section header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-          <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
-        </div>
-        <div>
-          <h2
-            id="eqip-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            EQIP Eligibility
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Environmental Quality Incentives Program — USDA cost-share
-          </p>
-        </div>
-      </div>
-
-      {/* Summary card */}
-      <Card>
-        <CardHeader className="border-b">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div>
-              <CardTitle className="text-base">Practice documentation</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                You&rsquo;ve documented{" "}
-                <span className="font-semibold text-primary">
-                  {documentedCount} of {totalCount}
-                </span>{" "}
-                eligible practices
-              </p>
-            </div>
-            {/* Progress bar */}
-            <div className="w-full sm:w-40">
-              <div
-                className="h-2.5 w-full rounded-full bg-muted overflow-hidden"
-                role="progressbar"
-                aria-valuenow={documentedCount}
-                aria-valuemin={0}
-                aria-valuemax={totalCount}
-                aria-label={`${documentedCount} of ${totalCount} practices documented`}
-              >
-                <div
-                  className="h-full rounded-full bg-primary transition-all"
-                  style={{
-                    width: `${Math.round((documentedCount / totalCount) * 100)}%`,
-                  }}
-                />
-              </div>
-              <p className="mt-1 text-right text-xs text-muted-foreground">
-                {Math.round((documentedCount / totalCount) * 100)}% complete
-              </p>
-            </div>
-          </div>
-        </CardHeader>
-
-        <CardContent>
-          {credit.notes && (
-            <p className="mb-4 rounded-lg bg-primary/5 border border-primary/20 px-3 py-2.5 text-sm text-foreground leading-relaxed">
-              {credit.notes}
-            </p>
-          )}
-
-          {/* Practice checklist */}
-          <ul aria-label="EQIP practice checklist" className="divide-y divide-border">
-            {eligibleCodes.map((code) => (
-              <EqipPracticeRow
-                key={code}
-                code={code}
-                name={EQIP_PRACTICE_CATALOG[code]}
-                documented={documentedCodes.has(code)}
-              />
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
-
-      {/* CTA */}
-      <Button
-        onClick={handleDownload}
-        className="w-full min-h-[48px] bg-accent text-accent-foreground hover:bg-accent/90 cursor-pointer font-semibold"
-        aria-label="Download EQIP summary as PDF"
+    <section aria-labelledby="eqip-heading">
+      <h2
+        id="eqip-heading"
+        className="font-heading text-xl font-semibold text-foreground"
       >
-        <Download className="mr-2 h-4 w-4" aria-hidden="true" />
-        Download EQIP Summary
-      </Button>
+        EQIP eligibility
+      </h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Environmental Quality Incentives Program — USDA cost-share
+      </p>
+
+      <div className="mt-6">
+        <RuleHead label="Practice documentation" />
+
+        <div className="mt-2 divide-y divide-border">
+          <LedgerRow
+            label="Common conservation practices documented"
+            value={`${documentedCount} of ${totalCount}`}
+          />
+        </div>
+
+        {/* Flat gauge under the figure it belongs to */}
+        <div
+          className="mt-1 h-1.5 w-full bg-muted"
+          role="progressbar"
+          aria-valuenow={documentedCount}
+          aria-valuemin={0}
+          aria-valuemax={totalCount}
+          aria-label={`${documentedCount} of ${totalCount} practices documented`}
+        >
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${documentedPct}%` }}
+          />
+        </div>
+        <p className="mt-1 text-right font-mono text-xs tabular-nums text-muted-foreground">
+          {documentedPct}%
+        </p>
+
+        {credit.notes && (
+          <EdgeNote tone="info" className="mt-4">
+            {credit.notes}
+          </EdgeNote>
+        )}
+
+        <ul
+          aria-label="EQIP practice checklist"
+          className="mt-4 border-t border-border"
+        >
+          {practiceCodes.map((code) => (
+            <EqipPracticeRow
+              key={code}
+              code={code}
+              name={COMMON_EQIP_PRACTICES[code] ?? `Practice ${code}`}
+              documented={documentedCodes.has(code)}
+            />
+          ))}
+        </ul>
+
+        <Button
+          onClick={handleDownload}
+          variant="outline"
+          className="mt-5 min-h-12 cursor-pointer"
+          aria-label="Download EQIP summary as PDF"
+        >
+          <Download aria-hidden="true" />
+          Download EQIP summary
+        </Button>
+      </div>
     </section>
   );
 }

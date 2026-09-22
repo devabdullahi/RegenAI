@@ -4,7 +4,7 @@ from functools import lru_cache
 import httpx
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from supabase import Client, create_client
+from supabase import AuthError, Client, create_client
 
 from app.config import settings
 
@@ -67,6 +67,12 @@ async def get_current_user(
             status_code=503,
             detail="Authentication service temporarily unavailable. Please retry.",
         )
+
+    except AuthError as exc:
+        # A rejected token is an expected client error, not a server fault:
+        # log without a traceback so bad tokens don't flood error monitoring.
+        logger.warning("Token rejected by Supabase auth: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     except Exception as exc:
         logger.exception("Unexpected error during token validation: %s", exc)

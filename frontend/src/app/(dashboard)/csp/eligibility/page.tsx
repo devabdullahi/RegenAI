@@ -1,22 +1,27 @@
 import Link from "next/link";
-import {
-  CheckCircle2,
-  Circle,
-  Info,
-  RefreshCw,
-  ExternalLink,
-  AlertCircle,
-  ShieldCheck,
-} from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Check } from "lucide-react";
+import { ButtonLink } from "@/components/shared/button-link";
+import { EdgeNote, LedgerRow, RuleHead, Stamp } from "@/components/shared/record";
 
 import { CSPEligibilityBadge } from "@/components/csp/csp-eligibility-card";
 import { CSPScoreGauge } from "@/components/csp/csp-score-gauge";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
+import { CSPReevaluateButton } from "@/components/csp/csp-reevaluate-button";
 
 import { api } from "@/lib/api/server-client";
+import {
+  adaptDeadlines,
+  adaptEligibility,
+  scoreFromEligibility,
+} from "@/lib/api/adapters";
+
+import {
+  NRCS_DISCLAIMER,
+  NRCS_SERVICE_CENTER_LOCATOR_URL,
+  practiceStandardStamp,
+} from "@/lib/csp-status";
+import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 import type { Metadata } from "next";
 import type { CSPResourceConcernResult, CSPEligibility, CSPScore } from "@/lib/api/types";
@@ -29,108 +34,61 @@ interface EligibilityPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }
 
-// ── Derive CSPScore from eligibility (no dedicated score endpoint) ─────────────
+// ── A box on a form: checked or blank, never a coloured circle ───────────────
 
-function deriveScore(eligibility: CSPEligibility): CSPScore {
-  const s = eligibility.stewardship_score;
-  const score_label: CSPScore["score_label"] =
-    s >= 80 ? "Excellent" : s >= 60 ? "Good" : s >= 40 ? "Fair" : "Needs Work";
-  const percentile_estimate: CSPScore["percentile_estimate"] =
-    s >= 80
-      ? "top 10%"
-      : s >= 65
-        ? "top 25%"
-        : s >= 50
-          ? "competitive"
-          : "below average";
-
-  const score_breakdown = eligibility.resource_concerns_met.map((rc) => ({
-    resource_concern: rc.name,
-    code: rc.code,
-    points_earned: rc.points_earned,
-    max_points:
-      rc.score > 0
-        ? Math.round(rc.points_earned / (rc.score / 100))
-        : rc.points_earned,
-    score: rc.score,
-    currently_met: rc.currently_met,
-  }));
-
-  return {
-    farm_id: eligibility.farm_id,
-    stewardship_score: s,
-    score_label,
-    percentile_estimate,
-    base_score: s,
-    bonus_points: Math.max(0, eligibility.estimated_ranking_score - s),
-    score_breakdown,
-    improvement_recommendations: eligibility.missing_requirements,
-    from_cache: eligibility.from_cache,
-    evaluated_at: eligibility.evaluated_at,
-  };
+function CheckBox({ checked }: { checked: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border",
+        checked ? "border-foreground text-foreground" : "border-border"
+      )}
+    >
+      {checked && <Check className="h-3 w-3" />}
+    </span>
+  );
 }
 
-// ── Resource concern detail card ──────────────────────────────────────────────
+// ── Resource concern detail ───────────────────────────────────────────────────
 
-function ResourceConcernDetailCard({ rc }: { rc: CSPResourceConcernResult }) {
+function ResourceConcernDetail({
+  rc,
+  farmId,
+}: {
+  rc: CSPResourceConcernResult;
+  farmId: string;
+}) {
   const met = rc.currently_met;
 
   return (
-    <div
-      className={`rounded-xl border p-4 space-y-3 ${met ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50/30"}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
+    <li className="space-y-2 border-b border-rule py-4 last:border-0">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">{rc.name}</p>
-          <span
-            className={`mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${met ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}
-          >
-            {met ? (
-              <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-            ) : (
-              <Circle className="h-3 w-3" aria-hidden="true" />
+          <p
+            className={cn(
+              "font-mono text-[0.6875rem] tracking-[0.08em] uppercase",
+              met ? "text-success" : "text-warning-foreground"
             )}
+          >
             {met ? "Threshold met" : "Not yet met"}
-          </span>
-        </div>
-        <div className="text-right shrink-0">
-          <p className="text-lg font-bold text-foreground leading-tight">
-            {rc.points_earned}
           </p>
-          <p className="text-xs text-muted-foreground">points earned</p>
+        </div>
+        <div className="text-right font-mono text-sm whitespace-nowrap text-foreground">
+          {rc.points_earned} pts
+          <span className="ml-3 text-muted-foreground">{rc.score} / 100</span>
         </div>
       </div>
 
-      {/* Score bar */}
-      <div className="space-y-1">
-        <div
-          className="h-2 w-full rounded-full bg-muted overflow-hidden"
-          role="progressbar"
-          aria-valuenow={rc.score}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label={`${rc.name} score: ${rc.score}%`}
-        >
-          <div
-            className={`h-full rounded-full transition-all ${met ? "bg-green-500" : "bg-amber-400"}`}
-            style={{ width: `${rc.score}%` }}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground text-right">
-          {rc.score}/100
-        </p>
-      </div>
-
-      {/* Evidence */}
       {rc.evidence.length > 0 && (
         <div>
-          <p className="text-xs font-medium text-muted-foreground mb-1.5">
+          <p className="font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
             Based on your farm data
           </p>
-          <ul className="space-y-1">
+          <ul className="mt-1 space-y-0.5">
             {rc.evidence.map((e, i) => (
-              <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden="true" />
+              <li key={i} className="text-xs leading-relaxed text-muted-foreground">
                 {e}
               </li>
             ))}
@@ -138,63 +96,95 @@ function ResourceConcernDetailCard({ rc }: { rc: CSPResourceConcernResult }) {
         </div>
       )}
 
-      {/* Improvement hint for unmet concerns */}
+      {/* Gap-closing activities from the API for unmet concerns */}
       {!met && (
-        <p className="rounded-md bg-amber-100 border border-amber-200 px-3 py-2 text-xs text-amber-800 leading-relaxed">
-          <span className="font-medium">To meet this threshold: </span>
-          {rc.code === "WATER_QUANTITY" &&
-            "Document irrigation efficiency practices or leverage your county's above-average rainfall."}
-          {rc.code === "AIR_QUALITY" &&
-            "Add a formal crop rotation plan (practice 328) alongside your existing cover crops."}
-          {rc.code === "PLANT_CONDITION" &&
-            "Introduce a third crop species or native species planting on at least one field."}
-          {rc.code === "ANIMALS" &&
-            "This category is less relevant for row-crop operations without livestock."}
-          {rc.code === "ENERGY" &&
-            "Document any energy efficiency measures on farm equipment or irrigation systems."}
-          {![
-            "WATER_QUANTITY",
-            "AIR_QUALITY",
-            "PLANT_CONDITION",
-            "ANIMALS",
-            "ENERGY",
-          ].includes(rc.code) &&
-            "Contact your local NRCS office to discuss documentation needed to meet this threshold."}
-        </p>
+        <div className="space-y-1">
+          {rc.suggested_activities.length > 0 && (
+            <>
+              <p className="font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+                Recommended activities for this area
+              </p>
+              <ul className="space-y-1">
+                {rc.suggested_activities.map((activity) => (
+                  <li
+                    key={activity.code}
+                    className="flex flex-wrap items-center gap-2 text-xs text-foreground"
+                  >
+                    <Stamp>
+                      {practiceStandardStamp(activity.practice_standard_code)}
+                    </Stamp>
+                    <span className="sr-only">
+                      NRCS practice standard {activity.practice_standard_code}
+                    </span>
+                    {activity.name}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <Link
+            href={`/csp/enhancements?farm_id=${encodeURIComponent(farmId)}`}
+            className="inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            See conservation activities
+          </Link>
+        </div>
       )}
-    </div>
+    </li>
   );
 }
 
-// ── Application timeline ──────────────────────────────────────────────────────
+// ── Application steps ─────────────────────────────────────────────────────────
 
 function EligibilityTimeline({
   rcCount,
+  totalConcernCount,
+  minRequired,
+  meetsMin,
+  additionalRequired,
+  contractYears,
   hasCommitment,
   hasEnhancements,
   farmId,
 }: {
   rcCount: number;
+  totalConcernCount: number;
+  minRequired: number | undefined;
+  meetsMin: boolean;
+  additionalRequired: number | undefined;
+  contractYears: number | undefined;
   hasCommitment: boolean;
   hasEnhancements: boolean;
   farmId: string;
 }) {
+  let concernDetail: string;
+  if (meetsMin) {
+    concernDetail = `${rcCount} of ${totalConcernCount} areas currently above threshold`;
+  } else if (minRequired !== undefined) {
+    concernDetail = `${rcCount} of ${minRequired} required areas met — keep working`;
+  } else {
+    concernDetail = `${rcCount} areas met so far — keep working`;
+  }
+
   const steps = [
     {
-      label: "Meet 2 or more conservation areas",
-      detail:
-        rcCount >= 2
-          ? `${rcCount} of 8 areas currently above threshold`
-          : `${rcCount} of 2 required areas met — keep working`,
-      done: rcCount >= 2,
+      label:
+        minRequired !== undefined
+          ? `Meet ${minRequired} or more conservation areas`
+          : "Meet the required number of conservation areas",
+      detail: concernDetail,
+      done: meetsMin,
     },
     {
-      label: "Commit to improving at least 1 more area",
+      label:
+        additionalRequired !== undefined
+          ? `Commit to improving at least ${additionalRequired} more area${additionalRequired === 1 ? "" : "s"}`
+          : "Commit to improving additional conservation areas",
       detail: hasCommitment
         ? "Enhancement activities selected and committed"
         : "Select an enhancement activity to make this commitment",
       done: hasCommitment,
-      actionHref: `/csp/enhancements?farm_id=${farmId}`,
+      actionHref: `/csp/enhancements?farm_id=${encodeURIComponent(farmId)}`,
       actionLabel: "Select enhancements",
     },
     {
@@ -203,69 +193,75 @@ function EligibilityTimeline({
         ? "Enhancement activities chosen"
         : "Choose which conservation activities to add",
       done: hasEnhancements,
-      actionHref: `/csp/enhancements?farm_id=${farmId}`,
+      actionHref: `/csp/enhancements?farm_id=${encodeURIComponent(farmId)}`,
       actionLabel: "Browse enhancements",
     },
     {
       label: "Contact your local NRCS office",
       detail:
-        "A conservation planner will schedule a site visit and finalize your 5-year contract",
+        contractYears !== undefined
+          ? `A conservation planner will schedule a site visit and finalize your ${contractYears}-year contract`
+          : "A conservation planner will schedule a site visit and finalize your contract",
       done: false,
-      actionHref:
-        "https://www.farmers.gov/contact/service-center-locator",
+      actionHref: NRCS_SERVICE_CENTER_LOCATOR_URL,
       actionLabel: "Find my NRCS office",
       external: true,
     },
   ];
 
   return (
-    <div className="space-y-3">
-      <h2 className="font-heading text-lg font-semibold text-foreground">
-        Steps to apply
-      </h2>
-      <ol className="space-y-3" aria-label="Application steps">
+    <section aria-labelledby="steps-heading" className="space-y-2">
+      <div className="rule-head">
+        <h2 id="steps-heading">Steps to apply</h2>
+        <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+      </div>
+      <ol className="mt-1" aria-label="Application steps">
         {steps.map((step, i) => (
-          <li key={i} className="flex items-start gap-3">
-            <div
-              className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 text-xs font-bold ${step.done ? "border-green-500 bg-green-50 text-green-600" : "border-muted-foreground/30 bg-muted text-muted-foreground"}`}
-              aria-hidden="true"
-            >
-              {step.done ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
-            </div>
-            <div className="flex-1 min-w-0 pt-0.5">
-              <p
-                className={`text-sm font-medium leading-snug ${step.done ? "text-foreground line-through decoration-muted-foreground/40" : "text-foreground"}`}
-              >
+          <li
+            key={i}
+            className="flex items-start gap-3 border-b border-rule py-3 last:border-0"
+          >
+            <CheckBox checked={step.done} />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm leading-snug font-medium text-foreground">
                 {step.label}
               </p>
-              <p className="text-xs text-muted-foreground mt-0.5">
+              <p className="mt-0.5 text-xs text-muted-foreground">
                 {step.detail}
               </p>
-              {!step.done && step.actionHref && (
-                step.external ? (
+              {!step.done &&
+                step.actionHref &&
+                (step.external ? (
                   <a
                     href={step.actionHref}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0"
+                    className="inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline"
                   >
                     {step.actionLabel}
-                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    <span className="sr-only"> (opens in new tab)</span>
                   </a>
                 ) : (
                   <Link
                     href={step.actionHref}
-                    className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0"
+                    className="inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline"
                   >
                     {step.actionLabel}
                   </Link>
-                )
-              )}
+                ))}
             </div>
+            <span
+              className={cn(
+                "shrink-0 font-mono text-[0.6875rem] tracking-[0.08em] uppercase",
+                step.done ? "text-success" : "text-muted-foreground"
+              )}
+            >
+              {step.done ? "Done" : "To do"}
+            </span>
           </li>
         ))}
       </ol>
-    </div>
+    </section>
   );
 }
 
@@ -273,42 +269,30 @@ function EligibilityTimeline({
 
 function ErrorState({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50">
-        <AlertCircle className="h-7 w-7 text-red-500" aria-hidden="true" />
-      </div>
-      <div>
-        <h2 className="font-heading text-lg font-semibold text-foreground">
-          Unable to load eligibility data
-        </h2>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
-      </div>
-      <Link href="/farms">
-        <Button variant="outline" className="min-h-[48px]">
-          Back to farms
-        </Button>
-      </Link>
+    <div className="max-w-[62ch] space-y-4 py-10">
+      <RuleHead label="CSP eligibility" />
+      <h2 className="font-heading text-xl font-semibold text-foreground">
+        Unable to load eligibility data
+      </h2>
+      <p className="text-sm text-muted-foreground">{message}</p>
+      <ButtonLink href="/farms" variant="outline">
+        Back to farms
+      </ButtonLink>
     </div>
   );
 }
 
 function NoFarmSelected() {
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
-        <ShieldCheck className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
-      </div>
-      <div>
-        <h2 className="font-heading text-lg font-semibold text-foreground">
-          Select a farm first
-        </h2>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Choose a farm to view CSP eligibility details.
-        </p>
-      </div>
-      <Link href="/farms">
-        <Button className="min-h-[48px]">Go to My Farms</Button>
-      </Link>
+    <div className="max-w-[62ch] space-y-4 py-10">
+      <RuleHead label="CSP eligibility" />
+      <h2 className="font-heading text-xl font-semibold text-foreground">
+        Select a farm first
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        Choose a farm to view CSP eligibility details.
+      </p>
+      <ButtonLink href="/farms">Go to My Farms</ButtonLink>
     </div>
   );
 }
@@ -327,198 +311,209 @@ export default async function CspEligibilityPage({
   }
 
   let eligibility: CSPEligibility;
+  let score: CSPScore;
   let farmName: string;
 
   try {
-    const [elig, farm] = await Promise.all([
+    const [eligibilityResp, farm] = await Promise.all([
       api.csp.getEligibility(farmId),
       api.farms.get(farmId),
     ]);
-    eligibility = elig;
     farmName = farm.name;
+    // Enhancements only after eligibility: that call persists the assessment
+    // GET /csp/enhancements ranks against. Both are optional enrichments.
+    const [deadlinesResp, enhancementsResp] = await Promise.all([
+      api.csp.getDeadlines(farm.state).catch(() => null),
+      api.csp.getEnhancements(farmId).catch((err: unknown) => {
+        console.error(`csp/eligibility page: enhancements failed farm=${farmId}`, err);
+        return null;
+      }),
+    ]);
+    eligibility = adaptEligibility(eligibilityResp, {
+      deadlines: adaptDeadlines(deadlinesResp),
+      enhancements: enhancementsResp,
+    });
+    score = scoreFromEligibility(
+      eligibilityResp,
+      eligibility.missing_requirements
+    );
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "An unexpected error occurred.";
     return <ErrorState message={message} />;
   }
-
-  const score = deriveScore(eligibility);
   const hasCommitment = eligibility.rc_count_will_meet > 0;
   const hasEnhancements = eligibility.active_enhancement_codes.length > 0;
+  const totalConcernCount = eligibility.resource_concerns_met.length;
 
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Breadcrumb */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link href="/farms" className="hover:text-foreground transition-colors">
+    <div className="space-y-8 pb-20 sm:pb-0">
+      {/* Breadcrumb + masthead */}
+      <div className="space-y-2">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link href="/farms" className="hover:text-foreground">
             {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farmId}`}
-            className="hover:text-foreground transition-colors"
+            href={`/csp?farm_id=${encodeURIComponent(farmId)}`}
+            className="hover:text-foreground"
           >
             CSP Navigator
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
-          <span className="text-foreground font-medium">Eligibility</span>
+          <span aria-current="page" className="font-medium text-foreground">
+            Eligibility
+          </span>
+        </nav>
+        <div className="border-b-2 border-rule-strong pb-3">
+          <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground sm:text-3xl">
+            CSP Eligibility
+          </h1>
+          <p className="mt-2 font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+            How your farm scores on each of the {totalConcernCount} conservation
+            areas
+          </p>
         </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          CSP Eligibility
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          How your farm scores on each of the 8 conservation areas
-        </p>
       </div>
 
       {/* Deadline alerts */}
       <CSPDeadlineBanners deadlines={eligibility.upcoming_deadlines} />
 
-      {/* Summary banner */}
-      <Card
-        className={`border-2 ${eligibility.eligibility_status === "eligible" ? "border-green-300 bg-green-50" : eligibility.eligibility_status === "act_now" ? "border-amber-300 bg-amber-50" : "border-red-200 bg-red-50"}`}
-      >
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-2">
-              <CSPEligibilityBadge
-                status={eligibility.eligibility_status}
-                large
-              />
-              {eligibility.act_now_eligible && (
-                <div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-sm font-semibold text-primary-foreground">
-                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                    ACT NOW Eligible — Instant Approval Available
+      {/* Summary */}
+      <section aria-labelledby="summary-heading" className="space-y-3">
+        <div className="rule-head">
+          <h2 id="summary-heading">Determination</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+        </div>
+
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-2">
+            <CSPEligibilityBadge
+              status={eligibility.eligibility_status}
+              large
+            />
+            {eligibility.act_now_eligible &&
+              eligibility.act_now_threshold !== null && (
+                <p className="max-w-[62ch] text-sm leading-relaxed text-foreground">
+                  May qualify for ACT NOW fast-track. Your score of{" "}
+                  <span className="font-mono">
+                    {eligibility.estimated_ranking_score} pts
+                  </span>{" "}
+                  meets the state ranking threshold of{" "}
+                  <span className="font-mono">
+                    {eligibility.act_now_threshold} pts
                   </span>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Your score of {eligibility.estimated_ranking_score} meets Iowa&apos;s ACT NOW
-                    threshold of {eligibility.act_now_threshold}. Apply during the
-                    ACT NOW window for immediate contract approval.
-                  </p>
-                </div>
+                  . If your state offers ACT NOW, your application may be
+                  eligible for fast-track approval. ACT NOW is used at the
+                  state&apos;s discretion and is not guaranteed.
+                </p>
               )}
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Stewardship score</p>
-              <p className="font-heading text-4xl font-bold text-foreground">
-                {eligibility.stewardship_score}
+            {eligibility.act_now_threshold === null && (
+              <p className="max-w-[62ch] text-sm leading-relaxed text-muted-foreground">
+                Your state has not published a ranking threshold, so there is no
+                score to compare yours against. NRCS ranks applications in your
+                state.
               </p>
-              <p className="text-xs text-muted-foreground">/100</p>
-            </div>
+            )}
           </div>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            {eligibility.notes}
-          </p>
-          {eligibility.ineligibility_reasons.length > 0 && (
-            <ul className="mt-3 space-y-1">
+          <div className="text-right">
+            <p className="font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+              Stewardship score
+            </p>
+            <p className="font-mono text-[2rem] leading-none font-medium text-foreground">
+              {eligibility.stewardship_score}
+            </p>
+            <p className="font-mono text-xs text-muted-foreground">
+              pts of 100 pts
+            </p>
+          </div>
+        </div>
+
+        <p className="reading max-w-[62ch] text-foreground">
+          {eligibility.notes}
+        </p>
+
+        {eligibility.ineligibility_reasons.length > 0 && (
+          <EdgeNote tone="destructive" title="Why your farm is not eligible yet">
+            <ul className="mt-1 space-y-1">
               {eligibility.ineligibility_reasons.map((r, i) => (
-                <li key={i} className="text-sm text-red-700 flex items-start gap-2">
-                  <span aria-hidden="true">•</span> {r}
+                <li key={i} className="text-sm text-destructive">
+                  {r}
                 </li>
               ))}
             </ul>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Score gauge */}
-      <Card>
-        <CardHeader className="border-b pb-3">
-          <p className="font-heading text-base font-semibold text-foreground">
-            Score breakdown
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Points earned across all 8 conservation areas
-          </p>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <CSPScoreGauge score={score} showBreakdown />
-        </CardContent>
-      </Card>
-
-      <Separator />
-
-      {/* Resource concern detail cards */}
-      <section aria-labelledby="rc-details-heading" className="space-y-4">
-        <h2
-          id="rc-details-heading"
-          className="font-heading text-lg font-semibold text-foreground"
-        >
-          Conservation area details
-        </h2>
-        <div className="space-y-3">
-          {eligibility.resource_concerns_met.map((rc) => (
-            <ResourceConcernDetailCard key={rc.code} rc={rc} />
-          ))}
-        </div>
+          </EdgeNote>
+        )}
       </section>
 
-      <Separator />
+      {/* Score breakdown */}
+      <section aria-labelledby="score-heading" className="space-y-3">
+        <div className="rule-head">
+          <h2 id="score-heading">Score breakdown</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Points earned across all {totalConcernCount} conservation areas
+        </p>
+        <CSPScoreGauge score={score} showBreakdown />
+      </section>
 
-      {/* Timeline */}
+      {/* Conservation area details */}
+      <section aria-labelledby="rc-details-heading" className="space-y-2">
+        <div className="rule-head">
+          <h2 id="rc-details-heading">Conservation area details</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+        </div>
+        <ul className="mt-1">
+          {eligibility.resource_concerns_met.map((rc) => (
+            <ResourceConcernDetail key={rc.code} rc={rc} farmId={farmId} />
+          ))}
+        </ul>
+      </section>
+
+      {/* Steps */}
       <EligibilityTimeline
         rcCount={eligibility.rc_count_above_threshold}
+        totalConcernCount={totalConcernCount}
+        minRequired={eligibility.min_concerns_required}
+        meetsMin={eligibility.meets_min_concerns}
+        additionalRequired={eligibility.additional_concerns_required}
+        contractYears={eligibility.contract_years}
         hasCommitment={hasCommitment}
         hasEnhancements={hasEnhancements}
         farmId={farmId}
       />
 
-      {/* Re-evaluate button */}
-      <div className="rounded-xl border border-border bg-card px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-foreground">
-            Last evaluated:{" "}
-            {new Date(eligibility.evaluated_at).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {eligibility.from_cache
-              ? "Showing cached results. Re-evaluate to refresh."
-              : "Eligibility is recalculated automatically when your farm data changes."}
-          </p>
+      {/* Re-evaluate */}
+      <section aria-labelledby="record-heading" className="space-y-2">
+        <div className="rule-head">
+          <h2 id="record-heading">Record</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
         </div>
-        <form
-          action={async () => {
-            "use server";
-            await api.csp.evaluate(farmId);
-          }}
-        >
-          <Button
-            type="submit"
-            variant="outline"
-            className="min-h-[48px] cursor-pointer"
-            aria-label="Re-evaluate CSP eligibility"
-          >
-            <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-            Re-evaluate
-          </Button>
-        </form>
-      </div>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <LedgerRow
+              label="Last evaluated"
+              value={formatDateTime(eligibility.evaluated_at, { month: "long" })}
+              note={
+                eligibility.from_cache
+                  ? "Showing cached results. Re-evaluate to refresh."
+                  : "Eligibility is recalculated automatically when your farm data changes."
+              }
+            />
+          </div>
+          <CSPReevaluateButton farmId={farmId} />
+        </div>
+      </section>
 
       {/* Disclaimer */}
-      <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 px-4 py-4">
-        <Info
-          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          CSP eligibility scores and payment estimates on this page are
-          calculated by RegenAI based on publicly available NRCS payment
-          schedules and your farm data. They are not official NRCS
-          determinations. Contact your local NRCS service center to submit an
-          application and receive official program determinations. This tool
-          does not replace professional agronomic or legal advice.
-        </p>
-      </div>
+      <p className="max-w-[62ch] border-t border-rule pt-3 text-xs leading-relaxed text-muted-foreground">
+        {NRCS_DISCLAIMER}
+      </p>
     </div>
   );
 }

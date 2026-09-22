@@ -7,8 +7,9 @@ that verifies every practice_code against the eqip_practices table.
 
 import logging
 from enum import Enum
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,15 @@ class LLMPriority(str, Enum):
 
 
 class LLMRecommendation(BaseModel):
-    """Schema for a single recommendation as returned by the LLM."""
+    """Schema for a single recommendation as returned by the LLM.
 
-    field_id: str = Field(..., min_length=1, description="UUID of the target field")
+    LLM output is untrusted: unknown keys are rejected rather than ignored so a
+    drifting output shape fails validation instead of being silently accepted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field_id: UUID = Field(..., description="UUID of the target field")
     practice_code: str = Field(..., min_length=1, description="EQIP practice code")
     title: str = Field(..., min_length=1, max_length=200, description="Short title")
     rationale: str = Field(..., min_length=10, description="Explanation with data citations")
@@ -45,14 +52,6 @@ class LLMRecommendation(BaseModel):
         return v.strip()
 
 
-class LLMRecommendationList(BaseModel):
-    """Wrapper to validate the full LLM output as a list of recommendations."""
-
-    recommendations: list[LLMRecommendation] = Field(
-        ..., min_length=0, max_length=10
-    )
-
-
 # ---------------------------------------------------------------------------
 # Hallucination guard
 # ---------------------------------------------------------------------------
@@ -69,8 +68,8 @@ def validate_practice_codes(
 
     Returns:
         A tuple of (valid_recommendations, flagged_recommendations).
-        Flagged recommendations have an unknown practice_code and should be
-        stored with status='needs_review' rather than shown to the farmer.
+        Flagged recommendations have an unknown practice_code; the caller
+        logs and drops them so farmers never see an unverified practice.
     """
     valid: list[LLMRecommendation] = []
     flagged: list[LLMRecommendation] = []
@@ -108,7 +107,7 @@ def validate_field_ids(
 
     Args:
         recommendations: Parsed LLM recommendations.
-        valid_field_ids: Set of field UUIDs belonging to the target farm.
+        valid_field_ids: Set of field UUID strings belonging to the target farm.
 
     Returns:
         A tuple of (valid_recommendations, flagged_recommendations).
@@ -117,7 +116,8 @@ def validate_field_ids(
     flagged: list[LLMRecommendation] = []
 
     for rec in recommendations:
-        if rec.field_id in valid_field_ids:
+        # str(UUID) is the canonical lowercase form Postgres returns for uuid columns.
+        if str(rec.field_id) in valid_field_ids:
             valid.append(rec)
         else:
             logger.warning(

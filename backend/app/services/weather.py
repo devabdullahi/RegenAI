@@ -4,22 +4,22 @@ Open-Meteo weather service.
 Fetches a 7-day forecast from the Open-Meteo public API (no key required) and
 returns records shaped to match the `weather_cache` table schema.
 
+Missing readings are never replaced with made-up values. `weather_cache`
+requires temp_high, temp_low and precip_mm (NOT NULL), so a day missing any of
+them is skipped and reported; soil_temp is nullable and stored as None.
+
 API docs: https://open-meteo.com/en/docs
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import httpx
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Public constants
-# ---------------------------------------------------------------------------
-
-OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Daily variables we request.  The names match Open-Meteo's query parameter
 # values exactly; they also map 1-to-1 to what we parse below.
@@ -33,21 +33,35 @@ _DAILY_VARS = [
 # How long (seconds) to wait for the Open-Meteo server to respond.
 _TIMEOUT_SECONDS = 20.0
 
+#: Days requested per forecast; context.py sizes its weather_cache read from it.
+FORECAST_DAYS = 7
+
+# Daily aggregates are bucketed by local day. Target-state farms are mostly on
+# US Central time.
+_FORECAST_TIMEZONE = "America/Chicago"
+
 
 # ---------------------------------------------------------------------------
-# Return type
+# Return types
 # ---------------------------------------------------------------------------
 
 class WeatherData(TypedDict):
     """One row of the `weather_cache` table (without auto-generated columns)."""
 
-    field_id: str        # filled in by the enrichment layer
-    date: str            # ISO-8601 date string  e.g. "2026-04-02"
-    temp_high: float     # °C
-    temp_low: float      # °C
-    precip_mm: float     # mm
-    soil_temp: float     # °C  (0 cm depth, may be None from API → 0.0)
-    fetched_at: str      # ISO-8601 UTC datetime string
+    field_id: str
+    date: str                # ISO-8601 date string  e.g. "2026-04-02"
+    temp_high: float         # °C
+    temp_low: float          # °C
+    precip_mm: float         # mm
+    soil_temp: float | None  # °C at 0 cm depth; None when the API has no reading
+    fetched_at: str          # ISO-8601 UTC datetime string
+
+
+class WeatherForecast(NamedTuple):
+    """Parsed forecast rows plus the dates dropped for missing required readings."""
+
+    rows: list[WeatherData]
+    skipped_dates: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +72,7 @@ async def fetch_weather_forecast(
     latitude: float,
     longitude: float,
     field_id: str,
-) -> list[WeatherData]:
+) -> WeatherForecast:
     """Fetch a 7-day forecast from Open-Meteo for the given coordinates.
 
     Args:
@@ -68,19 +82,15 @@ async def fetch_weather_forecast(
             the enrichment layer can insert them directly.
 
     Returns:
-        A list of up to 7 WeatherData dicts, one per forecast day.  Returns
-        an empty list if the API call fails — callers should treat this as a
-        non-fatal condition and log accordingly.
-
-    Raises:
-        Never raises — all exceptions are caught and logged.
+        A WeatherForecast. ``rows`` is empty if the API call fails — callers
+        treat this as non-fatal and report it as a warning.
     """
     params = {
         "latitude": latitude,
         "longitude": longitude,
         "daily": ",".join(_DAILY_VARS),
-        "timezone": "America/Chicago",
-        "forecast_days": 7,
+        "timezone": _FORECAST_TIMEZONE,
+        "forecast_days": FORECAST_DAYS,
     }
 
     fetched_at = datetime.now(tz=timezone.utc).isoformat()
@@ -93,7 +103,7 @@ async def fetch_weather_forecast(
                 latitude,
                 longitude,
             )
-            response = await client.get(OPEN_METEO_BASE_URL, params=params)
+            response = await client.get(settings.open_meteo_forecast_url, params=params)
             response.raise_for_status()
             payload = response.json()
     except httpx.TimeoutException:
@@ -102,7 +112,7 @@ async def fetch_weather_forecast(
             _TIMEOUT_SECONDS,
             field_id,
         )
-        return []
+        return WeatherForecast(rows=[], skipped_dates=[])
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "Open-Meteo returned HTTP %s for field=%s: %s",
@@ -110,10 +120,13 @@ async def fetch_weather_forecast(
             field_id,
             exc.response.text[:200],
         )
-        return []
-    except Exception:
-        logger.exception("Unexpected error fetching Open-Meteo data for field=%s", field_id)
-        return []
+        return WeatherForecast(rows=[], skipped_dates=[])
+    except (httpx.HTTPError, ValueError) as exc:
+        # Connection errors, and bodies that are not JSON (JSONDecodeError is a ValueError).
+        logger.warning(
+            "Open-Meteo request failed for field=%s: %s: %s", field_id, type(exc).__name__, exc
+        )
+        return WeatherForecast(rows=[], skipped_dates=[])
 
     return _parse_forecast(payload, field_id, fetched_at)
 
@@ -126,7 +139,7 @@ def _parse_forecast(
     payload: dict,
     field_id: str,
     fetched_at: str,
-) -> list[WeatherData]:
+) -> WeatherForecast:
     """Convert a raw Open-Meteo JSON response into WeatherData records.
 
     Open-Meteo returns parallel arrays keyed by variable name under
@@ -144,7 +157,10 @@ def _parse_forecast(
           }
         }
     """
-    daily = payload.get("daily", {})
+    daily = payload.get("daily") if isinstance(payload, dict) else None
+    if not isinstance(daily, dict):
+        logger.warning("Open-Meteo response has no daily object for field=%s", field_id)
+        return WeatherForecast(rows=[], skipped_dates=[])
 
     dates = daily.get("time", [])
     temp_highs = daily.get("temperature_2m_max", [])
@@ -154,32 +170,46 @@ def _parse_forecast(
 
     if not dates:
         logger.warning("Open-Meteo response contained no daily data for field=%s", field_id)
-        return []
+        return WeatherForecast(rows=[], skipped_dates=[])
 
     records: list[WeatherData] = []
+    skipped_dates: list[str] = []
 
     for i, date in enumerate(dates):
-        # Each parallel array may be shorter than `dates` if the API drops a
-        # variable; use .get-style index-with-default via the helper below.
-        record: WeatherData = {
-            "field_id": field_id,
-            "date": date,
-            "temp_high": _safe_float(temp_highs, i, default=0.0),
-            "temp_low": _safe_float(temp_lows, i, default=0.0),
-            "precip_mm": _safe_float(precips, i, default=0.0),
-            "soil_temp": _safe_float(soil_temps, i, default=0.0),
-            "fetched_at": fetched_at,
-        }
-        records.append(record)
+        temp_high = _safe_float(temp_highs, i)
+        temp_low = _safe_float(temp_lows, i)
+        precip_mm = _safe_float(precips, i)
 
+        if temp_high is None or temp_low is None or precip_mm is None:
+            skipped_dates.append(date)
+            continue
+
+        records.append(
+            {
+                "field_id": field_id,
+                "date": date,
+                "temp_high": temp_high,
+                "temp_low": temp_low,
+                "precip_mm": precip_mm,
+                "soil_temp": _safe_float(soil_temps, i),
+                "fetched_at": fetched_at,
+            }
+        )
+
+    if skipped_dates:
+        logger.warning(
+            "Open-Meteo missing temperature/precipitation for field=%s dates=%s; days skipped",
+            field_id,
+            skipped_dates,
+        )
     logger.info("Parsed %d forecast days for field=%s", len(records), field_id)
-    return records
+    return WeatherForecast(rows=records, skipped_dates=skipped_dates)
 
 
-def _safe_float(sequence: list, index: int, default: float) -> float:
-    """Return sequence[index] as a float, or `default` if out-of-range or None."""
+def _safe_float(sequence: list, index: int) -> float | None:
+    """Return sequence[index] as a float, or None if out of range, null, or not numeric."""
     try:
         value = sequence[index]
-        return float(value) if value is not None else default
+        return float(value) if value is not None else None
     except (IndexError, TypeError, ValueError):
-        return default
+        return None

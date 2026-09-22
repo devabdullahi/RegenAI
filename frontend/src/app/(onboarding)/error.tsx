@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/shared/page-states";
 
 export default function OnboardingError({
   error,
@@ -15,17 +16,15 @@ export default function OnboardingError({
   }, [error]);
 
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="font-heading text-xl font-bold">
-        Something went wrong during setup
-      </h2>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        We hit an error while setting up your farm. Your progress has been saved
-        locally.
-      </p>
-      <Button onClick={reset} className="min-h-[48px]">
+    <ErrorState
+      className="min-h-[60vh] justify-center"
+      title="Something went wrong during setup"
+      message="We hit a problem while setting up your farm. The answers you already entered are saved on this device, so you can try again without starting over."
+      actions={[{ label: "Back to farms", href: "/farms", variant: "outline" }]}
+    >
+      <Button onClick={reset} className="min-h-12 w-full max-w-xs">
         Try again
       </Button>
-    </div>
+    </ErrorState>
   );
 }

@@ -1,15 +1,20 @@
 import Link from "next/link";
-import { ArrowLeft, MapPin, Wheat, Tractor, AlertCircle, LayoutDashboard, Leaf, ClipboardList } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  ArrowLeft,
+  ArrowRight,
+  Wheat,
+  Tractor,
+  LayoutDashboard,
+  Leaf,
+  ClipboardList,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { LedgerRow, RuleHead, Stamp } from "@/components/shared/record";
+import { EmptyState, ErrorState } from "@/components/shared/page-states";
 import { api, ApiRequestError } from "@/lib/api/server-client";
+import { formatAcres, formatDate, formatNumber } from "@/lib/format";
 import type { Farm, Field } from "@/lib/api/types";
 import type { Metadata } from "next";
 
@@ -37,350 +42,241 @@ export default async function FarmDetailPage({
 }) {
   const { id } = await params;
 
-  // Attempt to fetch the farm — treat 404 specially, re-throw everything else
+  // 404 means missing or hidden by RLS; anything else is a load failure.
   let farm: Farm;
   try {
     farm = await api.farms.get(id);
   } catch (err) {
     if (err instanceof ApiRequestError && err.code === 404) {
-      return <FarmNotFound />;
+      return (
+        <PageShell>
+          <EmptyState
+            icon={Tractor}
+            title="Farm not found"
+            message="This farm does not exist or you do not have access to it."
+            actions={[{ label: "Back to My Farms", href: "/farms", icon: Tractor }]}
+          />
+        </PageShell>
+      );
     }
-    const message =
-      err instanceof Error ? err.message : "Failed to load farm.";
-    return <FarmLoadError message={message} />;
+    return (
+      <PageShell>
+        <ErrorState
+          title="Couldn't load farm"
+          message={err instanceof Error ? err.message : undefined}
+          actions={[
+            { label: "Try again", href: `/farms/${encodeURIComponent(id)}` },
+            { label: "Back to farms", href: "/farms", variant: "outline" },
+          ]}
+        />
+      </PageShell>
+    );
   }
 
-  // Fetch fields concurrently — missing fields is non-fatal
-  let fields: Field[] = [];
+  // Fetched after the farm so a 404 short-circuits. A failure shows an error
+  // in the fields section instead of a misleading "No fields yet".
+  let fields: Field[] | null = null;
+  let fieldsError: string | null = null;
   try {
     fields = await api.fields.list(id);
-  } catch {
-    // Render the page without fields rather than blocking the whole view
+  } catch (err) {
+    fieldsError = err instanceof Error ? err.message : "Failed to load fields.";
   }
 
+  const encodedFarmId = encodeURIComponent(farm.id);
+
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Back link */}
-      <div>
-        <Link
-          href="/farms"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All farms
-        </Link>
+    <PageShell>
+      {/* Masthead of the record: whose farm, where, how big */}
+      <div className="border-b-2 border-rule-strong pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="font-heading text-2xl font-semibold text-foreground sm:text-3xl">
+            {farm.name}
+          </h1>
+          {farm.goals && (
+            <Badge variant="secondary" className="shrink-0">
+              {GOALS_LABEL[farm.goals]}
+            </Badge>
+          )}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-muted-foreground">
+          <span>{farm.state}</span>
+          {farm.county_fips && <Stamp>FIPS {farm.county_fips}</Stamp>}
+          <span className="font-mono tabular-nums">
+            {formatAcres(farm.total_acres, { short: true })}
+          </span>
+        </div>
       </div>
 
-      {/* Farm summary card */}
-      <section aria-labelledby="farm-summary-heading">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
-                  <Tractor className="h-6 w-6 text-primary" aria-hidden="true" />
-                </div>
-                <div>
-                  <CardTitle
-                    id="farm-summary-heading"
-                    className="font-heading text-xl leading-tight"
-                  >
-                    {farm.name}
-                  </CardTitle>
-                  <CardDescription className="flex items-center gap-1 mt-0.5">
-                    <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
-                    {farm.state}
-                    {farm.county_fips && (
-                      <span className="text-muted-foreground/60">
-                        &nbsp;&middot; FIPS {farm.county_fips}
-                      </span>
-                    )}
-                  </CardDescription>
-                </div>
-              </div>
-              {farm.goals && (
-                <Badge variant="secondary" className="shrink-0 self-start">
-                  {GOALS_LABEL[farm.goals]}
-                </Badge>
-              )}
-            </div>
-          </CardHeader>
-
-          <CardContent className="space-y-4">
-            {/* Key stats row */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <StatTile label="Total acres" value={farm.total_acres.toLocaleString()} />
-              <StatTile label="Fields" value={String(fields.length)} />
-              <StatTile
-                label="Added"
-                value={new Date(farm.created_at).toLocaleDateString("en-US", {
-                  month: "short",
-                  year: "numeric",
-                })}
-                className="col-span-2 sm:col-span-1"
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* Quick-link action buttons */}
-      <section aria-labelledby="quick-links-heading">
-        <h2
-          id="quick-links-heading"
-          className="font-heading text-lg font-semibold text-foreground mb-3"
-        >
-          Jump to
-        </h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <QuickLink
-            href={`/credits?farm_id=${farm.id}`}
-            icon={<Leaf className="h-5 w-5" aria-hidden="true" />}
-            label="Credits & Programs"
-            description="EQIP and carbon market eligibility"
-          />
-          <QuickLink
-            href={`/csp?farm_id=${farm.id}`}
-            icon={<LayoutDashboard className="h-5 w-5" aria-hidden="true" />}
-            label="CSP Navigator"
-            description="Conservation Stewardship Program"
-          />
-          <QuickLink
-            href={`/activities?farm_id=${farm.id}`}
-            icon={<ClipboardList className="h-5 w-5" aria-hidden="true" />}
-            label="Field Activities"
-            description="Log and review field work"
-          />
-        </div>
-      </section>
-
-      {/* Fields list */}
-      <section aria-labelledby="fields-heading">
-        <div className="mb-4 flex items-center justify-between">
-          <h2
-            id="fields-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            Fields
-            {fields.length > 0 && (
-              <span className="ml-2 text-base font-normal text-muted-foreground">
-                ({fields.length})
-              </span>
-            )}
-          </h2>
-        </div>
-
-        {fields.length === 0 ? (
-          <Card className="py-10 text-center">
-            <CardContent className="flex flex-col items-center gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
-                <Wheat className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
-              </div>
-              <div>
-                <p className="font-medium text-foreground">No fields yet</p>
-                <p className="mt-1 text-sm text-muted-foreground max-w-xs mx-auto leading-relaxed">
-                  Fields will appear here once they are added to this farm.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {fields.map((field) => (
-              <FieldCard key={field.id} field={field} />
-            ))}
+      <div className="mt-8 space-y-8">
+        {/* Summary figures */}
+        <section aria-label="Farm summary">
+          <RuleHead label="Summary" />
+          <div className="mt-2 divide-y divide-border">
+            <LedgerRow
+              label="Total acres"
+              value={`${formatNumber(farm.total_acres)} ac`}
+            />
+            <LedgerRow
+              label="Fields"
+              value={fields ? String(fields.length) : "—"}
+            />
+            <LedgerRow
+              label="Added"
+              value={formatDate(farm.created_at, {
+                month: "short",
+                year: "numeric",
+              })}
+            />
           </div>
-        )}
-      </section>
-    </div>
+        </section>
+
+        {/* Quick links */}
+        <section aria-label="Jump to">
+          <RuleHead label="Jump to" />
+          <div className="mt-1 border-t border-border">
+            <QuickLink
+              href={`/dashboard?farm=${encodedFarmId}`}
+              icon={LayoutDashboard}
+              label="Farm dashboard"
+              description="Recommendations, weather, and soil"
+            />
+            <QuickLink
+              href={`/credits?farm_id=${encodedFarmId}`}
+              icon={Leaf}
+              label="Credits and programs"
+              description="EQIP and carbon market eligibility"
+            />
+            <QuickLink
+              href={`/csp?farm_id=${encodedFarmId}`}
+              icon={ShieldCheck}
+              label="CSP Navigator"
+              description="Conservation Stewardship Program"
+            />
+            <QuickLink
+              href={`/activities?farm_id=${encodedFarmId}`}
+              icon={ClipboardList}
+              label="Field log"
+              description="Log and review field work"
+            />
+          </div>
+        </section>
+
+        {/* Fields list */}
+        <section aria-label="Fields">
+          <RuleHead
+            label={
+              fields && fields.length > 0
+                ? `Fields · ${fields.length}`
+                : "Fields"
+            }
+          />
+
+          <div className="mt-1">
+            {fields === null ? (
+              <ErrorState
+                title="Couldn't load fields"
+                message={fieldsError ?? undefined}
+                actions={[{ label: "Try again", href: `/farms/${encodedFarmId}` }]}
+              />
+            ) : fields.length === 0 ? (
+              <EmptyState
+                icon={Wheat}
+                title="No fields yet"
+                message="Fields will appear here once they are added to this farm."
+              />
+            ) : (
+              <ul className="border-t border-border">
+                {fields.map((field) => (
+                  <FieldRecord key={field.id} field={field} />
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+      </div>
+    </PageShell>
   );
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function StatTile({
-  label,
-  value,
-  className,
-}: {
-  label: string;
-  value: string;
-  className?: string;
-}) {
+function PageShell({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className={[
-        "rounded-xl border border-border bg-muted/40 px-4 py-3",
-        className ?? "",
-      ]
-        .join(" ")
-        .trim()}
-    >
-      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        {label}
-      </p>
-      <p className="mt-1 text-xl font-bold text-foreground leading-tight">
-        {value}
-      </p>
+    <div className="pb-20 sm:pb-0">
+      <Link
+        href="/farms"
+        className="inline-flex min-h-12 items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        All farms
+      </Link>
+      {children}
     </div>
   );
 }
 
 function QuickLink({
   href,
-  icon,
+  icon: Icon,
   label,
   description,
 }: {
   href: string;
-  icon: React.ReactNode;
+  icon: LucideIcon;
   label: string;
   description: string;
 }) {
   return (
-    <Link href={href} className="group block">
-      <div className="flex min-h-[72px] items-center gap-4 rounded-xl border border-border bg-card px-4 py-4 transition-shadow group-hover:shadow-md">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          {icon}
-        </div>
-        <div className="min-w-0">
-          <p className="font-medium text-foreground leading-snug">
-            {label}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
-            {description}
-          </p>
-        </div>
-        <ArrowLeft
-          className="ml-auto h-4 w-4 shrink-0 rotate-180 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5"
-          aria-hidden="true"
-        />
-      </div>
+    <Link
+      href={href}
+      className="group flex min-h-14 items-center gap-3 border-b border-border py-3 transition-colors hover:bg-muted/40"
+    >
+      {/* The icon names the destination, the way a tab on a file does. */}
+      <Icon className="size-4 shrink-0 text-primary" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium text-foreground">{label}</span>
+        <span className="block text-xs text-muted-foreground">{description}</span>
+      </span>
+      <ArrowRight
+        className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+        aria-hidden="true"
+      />
     </Link>
   );
 }
 
-function FieldCard({ field }: { field: Field }) {
-  // Derive a soil texture hint from practices if a direct soil type isn't stored
+/** One field as a line of the plat book: name, acres, crop, practices. */
+function FieldRecord({ field }: { field: Field }) {
   const practices = field.practices ?? [];
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold font-heading">
-          <Wheat className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
+    <li className="flex flex-wrap items-baseline gap-x-4 gap-y-2 border-b border-border py-4">
+      <div className="min-w-0 flex-1">
+        <h3 className="font-heading text-base font-semibold text-foreground">
           {field.name}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Primary field stats */}
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">{field.acres.toLocaleString()} ac</Badge>
-          <Badge variant="secondary">{field.crop_type}</Badge>
-        </div>
-
-        {/* Boundary description (acts as human-readable soil/location info) */}
+        </h3>
+        <p className="mt-0.5 font-mono text-xs tracking-[0.08em] text-muted-foreground uppercase">
+          {field.crop_type}
+        </p>
+        {/* Legal land description (section / township / range) */}
         {field.boundary_description && (
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {field.boundary_description}
           </p>
         )}
-
-        {/* Practices */}
         {practices.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="mt-2 flex flex-wrap gap-1.5">
             {practices.map((practice) => (
-              <Badge key={practice} variant="outline" className="text-xs">
-                {practice}
-              </Badge>
+              <Stamp key={practice}>{practice}</Stamp>
             ))}
           </div>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Error / not-found states ──────────────────────────────────────────────────
-
-function FarmNotFound() {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-4">
-        <Link
-          href="/farms"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All farms
-        </Link>
       </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted">
-            <Tractor className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
-          </div>
-          <div className="max-w-sm">
-            <h1 className="font-heading text-lg font-semibold text-foreground">
-              Farm not found
-            </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              This farm does not exist or you do not have access to it. Head
-              back to your farms list to find the right one.
-            </p>
-          </div>
-          <Link href="/farms">
-            <Button className="min-h-[48px] bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer">
-              <Tractor className="mr-2 h-4 w-4" aria-hidden="true" />
-              Back to My Farms
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
 
-function FarmLoadError({ message }: { message: string }) {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-4">
-        <Link
-          href="/farms"
-          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          All farms
-        </Link>
-      </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
-            <AlertCircle
-              className="h-8 w-8 text-destructive"
-              aria-hidden="true"
-            />
-          </div>
-          <div className="max-w-sm">
-            <h1 className="font-heading text-lg font-semibold text-foreground">
-              Could not load farm
-            </h1>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              {message}
-            </p>
-          </div>
-          <div className="flex flex-col gap-2 w-full max-w-xs">
-            <Link href="/farms">
-              <Button
-                variant="outline"
-                className="w-full min-h-[48px] cursor-pointer"
-              >
-                Back to farms
-              </Button>
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+      <p className="font-mono text-base tabular-nums text-foreground">
+        {formatAcres(field.acres, { short: true })}
+      </p>
+    </li>
   );
 }

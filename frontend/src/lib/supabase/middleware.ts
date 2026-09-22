@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isDevAuthBypassEnabled } from "./dev-bypass";
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -29,18 +30,8 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  // Production guard: never allow auth bypass in production
-  if (
-    process.env.DEV_AUTH_BYPASS === "true" &&
-    process.env.NODE_ENV === "production"
-  ) {
-    throw new Error(
-      "DEV_AUTH_BYPASS cannot be enabled in production. Remove it from your environment."
-    );
-  }
-
-  // DEV ONLY: Auth bypass — remove before production
-  if (process.env.DEV_AUTH_BYPASS === "true") {
+  // DEV ONLY: Auth bypass (throws if enabled in production)
+  if (isDevAuthBypassEnabled()) {
     return supabaseResponse;
   }
 

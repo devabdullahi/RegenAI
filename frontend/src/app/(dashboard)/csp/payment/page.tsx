@@ -1,15 +1,17 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Info, ChevronRight, AlertCircle } from "lucide-react";
-import { Separator } from "@/components/ui/separator";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { ButtonLink } from "@/components/shared/button-link";
+import { RuleHead, Stamp } from "@/components/shared/record";
 
-import { CSPPaymentSummary } from "@/components/csp/csp-payment-summary";
+import {
+  CSPPaymentSummary,
+  CSPRulesCitation,
+} from "@/components/csp/csp-payment-summary";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 
 import { api } from "@/lib/api/server-client";
-import type { CSPEligibility, CSPPaymentEstimate } from "@/lib/api/types";
+import { adaptDeadlines, adaptPayment } from "@/lib/api/adapters";
+import type { CSPDeadline, CSPPaymentEstimate } from "@/lib/api/types";
 
 import type { Metadata } from "next";
 
@@ -17,65 +19,21 @@ export const metadata: Metadata = {
   title: "CSP Payment Estimate — RegenAI",
 };
 
-// ── Derive a CSPPaymentEstimate from the eligibility response ─────────────────
-// The backend exposes payment figures directly on the eligibility object.
-// There is no separate /csp/payment endpoint, so we project from eligibility.
-
-function derivePayment(eligibility: CSPEligibility): CSPPaymentEstimate {
-  const annual = eligibility.estimated_annual_payment ?? 0;
-  return {
-    farm_id: eligibility.farm_id,
-    state_code: "IA",
-    fiscal_year: eligibility.fiscal_year,
-    total_cropland_acres: 0,
-    rc_count_above_threshold: eligibility.rc_count_above_threshold,
-    eap_annual: annual,
-    enap_annual: 0,
-    raw_annual: annual,
-    capped_annual: annual,
-    contract_5yr_total: eligibility.estimated_5yr_payment ?? annual * 5,
-    per_acre_annual: 0,
-    min_applied: false,
-    max_applied: false,
-    enhancement_breakdown: [],
-    disclaimer:
-      "This is an estimate based on NRCS payment schedules and may differ from the final payment determined by your local NRCS office. Contact your NRCS service center to get an official payment estimate before applying.",
-  };
-}
-
 // ── Error state ───────────────────────────────────────────────────────────────
 
 function PaymentError({ message }: { message: string }) {
   return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground">
+    <div className="max-w-[62ch] space-y-4 pb-20 sm:pb-0">
+      <div className="border-b-2 border-rule-strong pb-3">
+        <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground">
           Payment Estimate
         </h1>
       </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
-            <AlertCircle
-              className="h-8 w-8 text-destructive"
-              aria-hidden="true"
-            />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              Could not load payment data
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              {message}
-            </p>
-          </div>
-          <Link href="/farms">
-            <Button variant="outline" className="min-h-[48px] cursor-pointer">
-              Back to farms
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
+      <RuleHead label="Could not load payment data" />
+      <p className="text-sm leading-relaxed text-muted-foreground">{message}</p>
+      <ButtonLink href="/farms" variant="outline">
+        Back to farms
+      </ButtonLink>
     </div>
   );
 }
@@ -98,100 +56,113 @@ export default async function CspPaymentPage({
   }
 
   let farmName: string;
-  let eligibility: CSPEligibility;
+  let payment: CSPPaymentEstimate;
+  let deadlines: CSPDeadline[];
 
   try {
-    const [farm, cspEligibility] = await Promise.all([
+    const [farm, paymentsResp] = await Promise.all([
       api.farms.get(farmId),
-      api.csp.getEligibility(farmId),
+      api.csp.getPayments(farmId),
     ]);
+    const deadlinesResp = await api.csp
+      .getDeadlines(farm.state)
+      .catch(() => null);
+
     farmName = farm.name;
-    eligibility = cspEligibility;
+    payment = adaptPayment(paymentsResp);
+    deadlines = adaptDeadlines(deadlinesResp);
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to load payment data.";
     return <PaymentError message={message} />;
   }
 
-  const payment = derivePayment(eligibility);
-
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Breadcrumb */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link href="/farms" className="hover:text-foreground transition-colors">
+    <div className="space-y-8 pb-20 sm:pb-0">
+      {/* Breadcrumb + masthead */}
+      <div className="space-y-2">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link href="/farms" className="hover:text-foreground">
             {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farmId}`}
-            className="hover:text-foreground transition-colors"
+            href={`/csp?farm_id=${encodeURIComponent(farmId)}`}
+            className="hover:text-foreground"
           >
             CSP Navigator
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
-          <span className="text-foreground font-medium">Payment Estimate</span>
+          <span aria-current="page" className="font-medium text-foreground">
+            Payment Estimate
+          </span>
+        </nav>
+        <div className="border-b-2 border-rule-strong pb-3">
+          <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground sm:text-3xl">
+            Payment Estimate
+          </h1>
+          <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+            <span>{payment.state_code}</span>
+            <span aria-hidden="true">&middot;</span>
+            <span>{payment.contract_years}-year contract</span>
+            <Stamp>FY{payment.fiscal_year}</Stamp>
+          </p>
         </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Payment Estimate
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          How much CSP could pay your farm over a 5-year contract
-        </p>
       </div>
 
       {/* Deadline alerts */}
-      <CSPDeadlineBanners deadlines={eligibility.upcoming_deadlines} />
+      <CSPDeadlineBanners deadlines={deadlines} />
 
       {/* How payment works */}
-      <div className="rounded-xl border border-border bg-card px-4 py-4 space-y-2">
-        <p className="text-sm font-semibold text-foreground">
-          How the CSP payment is calculated
+      <section aria-labelledby="how-heading" className="space-y-2">
+        <div className="rule-head">
+          <h2 id="how-heading">How the CSP payment is worked out</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+        </div>
+        <p className="reading max-w-[62ch] text-foreground">
+          Your estimate adds two parts: the{" "}
+          <strong>Existing Activity Payment</strong> ({payment.eap_label}) and{" "}
+          <strong>conservation activity payments</strong> for the activities you
+          adopt. The {payment.contract_years}-year total is checked against the{" "}
+          {payment.contract_limit_label}.
         </p>
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          Your payment has two parts: (1){" "}
-          <strong>Existing Activity Payment</strong> — a per-acre rate
-          multiplied by how many conservation areas you already meet, and (2){" "}
-          <strong>Enhancement Payment</strong> — paid for each new activity you
-          commit to adding. Both are paid annually for 5 years.
-        </p>
-      </div>
+        <ul
+          className="reading max-w-[62ch] space-y-2 text-muted-foreground"
+          aria-label="CSP payment rules"
+        >
+          {[
+            payment.rule_notes.existing_activity_payment,
+            payment.rule_notes.annual_payment_limit,
+            payment.rule_notes.activity_model,
+          ]
+            .filter((note) => note.length > 0)
+            .map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+        </ul>
+        <CSPRulesCitation rules={payment.rules} />
+      </section>
 
-      {/* Full payment summary */}
+      {/* The ticket */}
       <CSPPaymentSummary payment={payment} compact={false} />
 
-      <Separator />
-
-      {/* Add more enhancements CTA */}
-      <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-foreground">
-            Want a higher payment?
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Adding more enhancement activities increases your annual payment
-            and your application score.
-          </p>
+      {/* Add more activities */}
+      <section aria-labelledby="more-heading" className="space-y-3">
+        <div className="rule-head">
+          <h2 id="more-heading">Want a higher payment?</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
         </div>
-        <Link href={`/csp/enhancements?farm_id=${farmId}`}>
-          <Button className="min-h-[48px] bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer">
-            Browse More Enhancements
-            <ChevronRight className="ml-1 h-4 w-4" aria-hidden="true" />
-          </Button>
-        </Link>
-      </div>
-
-      {/* Disclaimer */}
-      <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 px-4 py-4">
-        <Info
-          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {payment.disclaimer}
+        <p className="reading max-w-[62ch] text-foreground">
+          Adding more conservation activities increases your annual payment and
+          your application score.
         </p>
-      </div>
+        <ButtonLink href={`/csp/enhancements?farm_id=${encodeURIComponent(farmId)}`}>
+          Browse conservation activities
+        </ButtonLink>
+      </section>
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/shared/page-states";
 
 export default function DashboardError({
   error,
@@ -15,15 +16,10 @@ export default function DashboardError({
   }, [error]);
 
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <h2 className="font-heading text-xl font-bold">Something went wrong</h2>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        We had trouble loading your farm data. Check your connection and try
-        again.
-      </p>
-      <Button onClick={reset} className="min-h-[48px]">
+    <ErrorState actions={[{ label: "Back to farms", href: "/farms", variant: "outline" }]}>
+      <Button onClick={reset} className="min-h-12 cursor-pointer">
         Try again
       </Button>
-    </div>
+    </ErrorState>
   );
 }

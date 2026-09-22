@@ -11,33 +11,46 @@ policies are enforced through the authenticated Supabase client, so users can
 only access documents belonging to farms they own.
 
 Upload constraints:
-    - Maximum file size: 10 MB (10_485_760 bytes)
+    - Maximum file size: see _MAX_FILE_SIZE_MB below
     - Allowed doc_type values: soil_report, field_photo, compliance
-    - Files are stored in the 'farm-documents' Supabase Storage bucket under
-      the path  <user_id>/<farm_id>/<doc_type>/<uuid>_<original_filename>
+    - Files are stored in the private 'farm-documents' Supabase Storage bucket
+      under <user_id>/<farm_id>/<doc_type>/<uuid>_<safe_filename>. The first
+      path segment must be the user's id: the storage.objects policies in
+      migration 20260913000008 only allow access under auth.uid().
 """
 
 import logging
+import re
 import uuid
 from typing import Annotated
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from postgrest.exceptions import APIError
+from storage3.utils import StorageException
 
+from app.auth.access import assert_farm_access
 from app.auth.middleware import get_authenticated_client, get_current_user
+from app.models.schemas import DocumentResponse, DocumentType
 from app.rate_limit import limiter
-from app.models.schemas import DocumentCreate, DocumentResponse, DocumentType
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-# Supabase Storage bucket name — must be created in the Supabase dashboard.
+# Private bucket created by migration 20260913000008.
 _STORAGE_BUCKET = "farm-documents"
 
-# 10 MB hard limit enforced before the bytes reach Supabase Storage.
-_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10_485_760 bytes
+# Hard limit enforced before the bytes reach Supabase Storage.
+_MAX_FILE_SIZE_MB = 10
+_MAX_FILE_SIZE_BYTES = _MAX_FILE_SIZE_MB * 1024 * 1024
+
+_MAX_FILENAME_LENGTH = 200
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+# Errors the storage client raises for failed or unreachable requests.
+_STORAGE_ERRORS = (StorageException, httpx.HTTPError)
 
 
 # ---------------------------------------------------------------------------
@@ -45,26 +58,39 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10_485_760 bytes
 # ---------------------------------------------------------------------------
 
 
-def _build_storage_path(user_id: str, farm_id: str, doc_type: str, filename: str) -> str:
-    """Return a deterministic, collision-safe storage path for a document."""
-    safe_name = filename.replace(" ", "_")
-    unique_prefix = str(uuid.uuid4())
-    return f"{user_id}/{farm_id}/{doc_type}/{unique_prefix}_{safe_name}"
+def _sanitize_filename(filename: str) -> str:
+    """Reduce a client-supplied filename to a safe basename.
 
-
-async def _assert_farm_ownership(farm_id: UUID, supabase) -> None:
-    """Raise HTTP 404 if the farm does not exist or is not accessible via RLS.
-
-    .single().execute() raises postgrest.exceptions.APIError (PGRST116) when
-    zero rows are returned, so we catch that and convert it to a clean 404
-    rather than letting it propagate as an unhandled 500.
+    Strips any directory part (either slash style) so the name cannot move the
+    object outside the user's folder, then replaces characters outside
+    [A-Za-z0-9._-]. Leading dots are removed so the name is never hidden or
+    relative. Returns "" when nothing usable remains.
     """
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    safe_name = _UNSAFE_FILENAME_CHARS.sub("_", basename).lstrip(".")
+    return safe_name[-_MAX_FILENAME_LENGTH:]
+
+
+def _build_storage_path(user_id: str, farm_id: str, doc_type: str, safe_name: str) -> str:
+    """Return a collision-safe storage path whose first segment is the user id."""
+    return f"{user_id}/{farm_id}/{doc_type}/{uuid.uuid4()}_{safe_name}"
+
+
+def _declared_size_too_large(content_length: str | None) -> bool:
+    """Best-effort early size check from the Content-Length header.
+
+    Raises:
+        HTTPException 400: the header is present but not a non-negative integer.
+    """
+    if content_length is None:
+        return False
     try:
-        result = supabase.table("farms").select("id").eq("id", farm_id).single().execute()
-    except APIError:
-        raise HTTPException(status_code=404, detail="Farm not found")
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Farm not found")
+        declared_bytes = int(content_length)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+    if declared_bytes < 0:
+        raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+    return declared_bytes > _MAX_FILE_SIZE_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -78,84 +104,71 @@ async def upload_document(
     request: Request,
     farm_id: Annotated[UUID, Form(description="UUID of the farm this document belongs to")],
     doc_type: Annotated[DocumentType, Form(description="Document category")],
-    file: Annotated[UploadFile, File(description="File to upload (max 10 MB)")],
+    file: Annotated[UploadFile, File(description=f"File to upload (max {_MAX_FILE_SIZE_MB} MB)")],
     description: Annotated[str | None, Form(max_length=500)] = None,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Upload a document for a farm and record its metadata in the documents table.
 
-    The file is streamed into Supabase Storage under a user/farm-scoped path.
-    A metadata row is then inserted into the ``documents`` table. The EQIP
-    eligibility engine will detect qualifying doc_type values (soil_report,
-    field_photo, compliance) on its next evaluation run.
-
-    Args:
-        farm_id: UUID of the farm (must be owned by the authenticated user).
-        doc_type: One of soil_report | field_photo | compliance.
-        file: Multipart file, must be <= 10 MB.
-        description: Optional human-readable description of the document.
-
-    Returns:
-        DocumentResponse with storage path and metadata.
+    The file is stored in Supabase Storage under a user/farm-scoped path, then
+    a metadata row is inserted into ``documents``. If the insert fails the
+    stored object is removed again (best effort).
 
     Raises:
-        HTTPException 400: File exceeds 10 MB limit or no filename provided.
+        HTTPException 400: Missing/unusable filename or malformed Content-Length.
         HTTPException 404: Farm not found (or not accessible to the user).
+        HTTPException 413: File exceeds the size limit.
         HTTPException 500: Storage upload or database insert failure.
     """
-    # Validate farm ownership (RLS provides isolation, this gives a clean 404).
-    await _assert_farm_ownership(farm_id, supabase)
+    farm_id_str = str(farm_id)
+    user_id_str = str(user.id)
+    assert_farm_access(farm_id_str, supabase)
 
-    # Enforce filename requirement.
-    filename = file.filename or ""
-    if not filename:
+    safe_name = _sanitize_filename(file.filename or "")
+    if not safe_name:
         raise HTTPException(status_code=400, detail="Uploaded file must have a filename.")
 
-    # Fast path: reject oversized uploads before reading the body.
-    # Content-Length can be spoofed by clients, so this is a best-effort early
-    # rejection only — the definitive size check after file.read() below is
-    # the authoritative enforcement point.
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > _MAX_FILE_SIZE:
+    # Content-Length can be spoofed, so this is only an early rejection; the
+    # size check after file.read() below is the authoritative one.
+    if _declared_size_too_large(request.headers.get("content-length")):
         raise HTTPException(
             status_code=413,
-            detail="File too large: request body exceeds the 10 MB limit.",
+            detail=f"File too large: request body exceeds the {_MAX_FILE_SIZE_MB} MB limit.",
         )
 
-    # Read file into memory and enforce size limit (authoritative check).
     contents = await file.read()
     size_bytes = len(contents)
-    if size_bytes > _MAX_FILE_SIZE:
+    if size_bytes > _MAX_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=413,
-            detail=f"File size {size_bytes:,} bytes exceeds the 10 MB limit.",
+            detail=f"File size {size_bytes:,} bytes exceeds the {_MAX_FILE_SIZE_MB} MB limit.",
         )
 
-    # Build storage path and upload to Supabase Storage.
-    storage_path = _build_storage_path(str(user.id), farm_id, doc_type.value, filename)
+    storage_path = _build_storage_path(user_id_str, farm_id_str, doc_type.value, safe_name)
+    bucket = supabase.storage.from_(_STORAGE_BUCKET)
 
     try:
-        supabase.storage.from_(_STORAGE_BUCKET).upload(
+        bucket.upload(
             path=storage_path,
             file=contents,
             file_options={"content-type": file.content_type or "application/octet-stream"},
         )
-    except Exception as exc:
-        logger.exception(
+    except _STORAGE_ERRORS as exc:
+        logger.error(
             "documents.upload: storage upload failed farm=%s path=%s error=%s",
-            farm_id,
+            farm_id_str,
             storage_path,
             exc,
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Failed to upload file to storage.")
 
-    # Insert metadata row into the documents table.
     row = {
-        "farm_id": farm_id,
-        "user_id": str(user.id),
+        "farm_id": farm_id_str,
+        "user_id": user_id_str,
         "doc_type": doc_type.value,
-        "file_name": filename,
+        "file_name": safe_name,
         "storage_path": storage_path,
         "size_bytes": size_bytes,
         "description": description,
@@ -163,33 +176,35 @@ async def upload_document(
 
     try:
         result = supabase.table("documents").insert(row).execute()
-        if not result.data:
-            raise RuntimeError("Insert returned no data")
-        inserted = result.data[0]
-    except Exception as exc:
-        logger.exception(
+    except APIError as exc:
+        logger.error(
             "documents.upload: db insert failed farm=%s path=%s error=%s",
-            farm_id,
+            farm_id_str,
             storage_path,
             exc,
+            exc_info=True,
         )
-        # Best-effort cleanup of the orphaned storage object.
+        result = None
+
+    if not result or not result.data:
         try:
-            supabase.storage.from_(_STORAGE_BUCKET).remove([storage_path])
-        except Exception:
+            bucket.remove([storage_path])
+        except _STORAGE_ERRORS as exc:
             logger.warning(
-                "documents.upload: orphaned storage object at path=%s", storage_path
+                "documents.upload: orphaned storage object path=%s error=%s",
+                storage_path,
+                exc,
             )
         raise HTTPException(status_code=500, detail="Failed to record document metadata.")
 
     logger.info(
         "documents.upload: success farm=%s doc_type=%s size_bytes=%d path=%s",
-        farm_id,
+        farm_id_str,
         doc_type.value,
         size_bytes,
         storage_path,
     )
-    return inserted
+    return result.data[0]
 
 
 @router.get("/", response_model=list[DocumentResponse])
@@ -201,41 +216,24 @@ async def list_documents(
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
-    """List documents for a farm, optionally filtered by doc_type.
-
-    RLS ensures only documents belonging to farms the authenticated user owns
-    are returned. Pagination is supported via limit/offset.
-
-    Args:
-        farm_id: UUID of the farm (required).
-        doc_type: Optional filter — one of soil_report | field_photo | compliance.
-        limit: Page size (1–200, default 50).
-        offset: Row offset for pagination (default 0).
-
-    Returns:
-        List of DocumentResponse ordered by created_at descending.
+    """List documents for a farm (newest first), optionally filtered by doc_type.
 
     Raises:
         HTTPException 404: Farm not found (or not accessible to the user).
         HTTPException 500: Database query failure.
     """
-    await _assert_farm_ownership(farm_id, supabase)
+    farm_id_str = str(farm_id)
+    assert_farm_access(farm_id_str, supabase)
+
+    query = supabase.table("documents").select("*").eq("farm_id", farm_id_str)
+    if doc_type is not None:
+        query = query.eq("doc_type", doc_type.value)
 
     try:
-        query = (
-            supabase.table("documents")
-            .select("*")
-            .eq("farm_id", farm_id)
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-        )
-        if doc_type is not None:
-            query = query.eq("doc_type", doc_type.value)
-
-        result = query.execute()
-    except Exception as exc:
-        logger.exception(
-            "documents.list: query failed farm=%s error=%s", farm_id, exc
+        result = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    except APIError as exc:
+        logger.error(
+            "documents.list: query failed farm=%s error=%s", farm_id_str, exc, exc_info=True
         )
         raise HTTPException(status_code=500, detail="Failed to retrieve documents.")
 
@@ -244,80 +242,67 @@ async def list_documents(
 
 @router.delete("/{doc_id}", status_code=204)
 async def delete_document(
-    doc_id: str,
+    doc_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
     """Delete a document record and remove the file from Supabase Storage.
 
-    The requesting user must own the farm the document belongs to. RLS prevents
-    cross-user access; the explicit farm ownership check provides a clean 404
-    rather than a cryptic empty-result response.
-
-    Args:
-        doc_id: UUID of the document to delete.
-
-    Returns:
-        204 No Content on success.
+    RLS scopes the lookup to documents on the user's own farms, so a missing
+    row means "not found or not yours" and returns 404.
 
     Raises:
         HTTPException 404: Document not found (or not accessible to the user).
-        HTTPException 500: Database deletion failure.
+        HTTPException 500: Database lookup or deletion failure.
     """
-    # Fetch the document — RLS will filter out records the user doesn't own.
+    doc_id_str = str(doc_id)
+
     try:
         result = (
             supabase.table("documents")
-            .select("id, farm_id, storage_path, user_id")
-            .eq("id", doc_id)
-            .single()
+            .select("id, farm_id, storage_path")
+            .eq("id", doc_id_str)
+            .limit(1)
             .execute()
         )
-    except Exception as exc:
-        logger.exception(
-            "documents.delete: fetch failed doc_id=%s error=%s", doc_id, exc
+    except APIError as exc:
+        logger.error(
+            "documents.delete: fetch failed doc_id=%s error=%s", doc_id_str, exc, exc_info=True
         )
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=500, detail="Failed to look up document.")
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    doc = result.data
+    doc = result.data[0]
     storage_path: str = doc["storage_path"]
-
-    # Verify the user owns the farm (belt-and-suspenders over RLS).
-    farm_check = (
-        supabase.table("farms")
-        .select("id")
-        .eq("id", doc["farm_id"])
-        .single()
-        .execute()
-    )
-    if not farm_check.data:
-        raise HTTPException(status_code=404, detail="Document not found")
 
     # Delete the metadata row first — if storage removal fails the DB stays clean.
     try:
-        supabase.table("documents").delete().eq("id", doc_id).execute()
-    except Exception as exc:
-        logger.exception(
-            "documents.delete: db delete failed doc_id=%s error=%s", doc_id, exc
+        supabase.table("documents").delete().eq("id", doc_id_str).execute()
+    except APIError as exc:
+        logger.error(
+            "documents.delete: db delete failed doc_id=%s error=%s",
+            doc_id_str,
+            exc,
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Failed to delete document record.")
 
-    # Remove file from storage (non-fatal if the object is already gone).
+    # Non-fatal: the row is gone; an orphaned object is logged for cleanup.
     try:
         supabase.storage.from_(_STORAGE_BUCKET).remove([storage_path])
-    except Exception as exc:
+    except _STORAGE_ERRORS as exc:
         logger.warning(
-            "documents.delete: storage removal failed path=%s error=%s",
+            "documents.delete: storage removal failed doc_id=%s path=%s error=%s",
+            doc_id_str,
             storage_path,
             exc,
         )
 
     logger.info(
         "documents.delete: success doc_id=%s farm=%s path=%s",
-        doc_id,
+        doc_id_str,
         doc["farm_id"],
         storage_path,
     )

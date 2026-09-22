@@ -1,17 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { toast } from "sonner";
-import {
-  Leaf,
-  ChevronDown,
-  ChevronUp,
-  Sprout,
-  TrendingUp,
-  ArrowRight,
-} from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EdgeNote, RuleHead } from "@/components/shared/record";
 import {
   Dialog,
   DialogContent,
@@ -20,119 +12,52 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
-import type { CreditEligibility, Field } from "@/lib/api/types";
+import { formatAcres, formatNumber } from "@/lib/format";
+import type { CreditEligibility, VcmEstimate } from "@/lib/api/types";
 
-// VCM field-level breakdown row — one row per field
-interface FieldBreakdown {
-  fieldId: string;
-  fieldName: string;
-  practice: string;
-  acres: number;
-  creditsPerAcre: number;
-  estimatedCredits: number;
-}
-
-// Build field breakdown from available data
-function buildFieldBreakdown(
-  credit: CreditEligibility,
-  fields: Field[]
-): FieldBreakdown[] {
-  const CREDITS_PER_ACRE_BY_PRACTICE: Record<string, number> = {
-    "340": 1.2, // cover crops
-    "329": 0.9, // no-till
-    "590": 0.5, // nutrient management
-    "600": 0.4, // pest management
-  };
-
-  const PRACTICE_NAMES: Record<string, string> = {
-    "340": "Cover crops",
-    "329": "No-till",
-    "590": "Nutrient management",
-    "600": "Pest management",
-  };
-
-  const rows: FieldBreakdown[] = [];
-
-  for (const field of fields) {
-    for (const practiceCode of credit.practices_documented) {
-      const creditsPerAcre =
-        CREDITS_PER_ACRE_BY_PRACTICE[practiceCode] ?? 0.8;
-      rows.push({
-        fieldId: field.id,
-        fieldName: field.name,
-        practice: PRACTICE_NAMES[practiceCode] ?? `Practice ${practiceCode}`,
-        acres: field.acres,
-        creditsPerAcre,
-        estimatedCredits: parseFloat(
-          (field.acres * creditsPerAcre).toFixed(1)
-        ),
-      });
-    }
-  }
-
-  return rows;
+function formatCredits(value: number): string {
+  return formatNumber(value, { maxFractionDigits: 1 });
 }
 
 function HowCreditsDialog() {
   return (
     <Dialog>
       <DialogTrigger
-        render={
-          <Button
-            variant="outline"
-            className="w-full min-h-[48px] cursor-pointer border-border"
-          />
-        }
+        render={<Button variant="outline" className="min-h-12 cursor-pointer" />}
       >
-        <ChevronDown className="mr-2 h-4 w-4" aria-hidden="true" />
-        How credits are calculated
+        How this estimate works
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>How VCM credits are calculated</DialogTitle>
+          <DialogTitle>How the carbon credit estimate works</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+        <div className="space-y-4 text-sm leading-relaxed text-muted-foreground">
           <p>
-            Voluntary carbon credits represent one metric ton of CO₂ (or
-            equivalent greenhouse gas) removed from the atmosphere or prevented
-            from being released.
+            A carbon credit usually stands for one metric ton of CO₂ (or the
+            same amount of another greenhouse gas) kept out of the air.
           </p>
-          <div className="rounded-lg bg-muted p-3 space-y-2">
-            <p className="font-semibold text-foreground">The formula:</p>
-            <p className="font-mono text-xs bg-background rounded px-2 py-1.5">
-              Acres &times; credits/acre &times; verification factor
+          <div className="border-l-[3px] border-l-border bg-card py-3 pr-3 pl-4">
+            <p className="font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+              The formula
+            </p>
+            <p className="mt-1 font-mono text-xs text-foreground">
+              Acres &times; estimated credits per acre, for each practice
             </p>
           </div>
-          <ul className="space-y-2 list-none">
-            <li className="flex gap-2">
-              <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-              <span>
-                <strong className="text-foreground">Cover crops</strong> sequester
-                roughly 0.9–1.5 tonnes of carbon per acre per year by keeping
-                living roots in the soil through winter.
-              </span>
+          <ul className="space-y-2 border-t border-border pt-3">
+            <li className="border-b border-border pb-2">
+              The per-acre rates are RegenAI estimates. They do not come from a
+              carbon registry.
             </li>
-            <li className="flex gap-2">
-              <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-              <span>
-                <strong className="text-foreground">No-till</strong> reduces soil
-                disturbance, locking in existing organic matter and saving roughly
-                0.7–1.1 tonnes per acre per year.
-              </span>
+            <li className="border-b border-border pb-2">
+              Fields with more soil organic matter on record use a higher rate
+              within each practice&apos;s range.
             </li>
-            <li className="flex gap-2">
-              <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-              <span>
-                A third-party verifier audits your records annually and issues
-                certified credits, which can then be sold on carbon markets.
-              </span>
+            <li>
+              Real credits depend on the program you join, its rules, and a
+              third-party check of your records.
             </li>
           </ul>
-          <p>
-            Your estimates above use the{" "}
-            <strong className="text-foreground">Soil Carbon Protocol</strong> methodology
-            — the leading standard for row-crop farming in the Midwest.
-          </p>
         </div>
         <DialogFooter showCloseButton />
       </DialogContent>
@@ -140,197 +65,153 @@ function HowCreditsDialog() {
   );
 }
 
-interface VcmDetailProps {
-  credit: CreditEligibility;
-  fields: Field[];
+const HEAD_CELL =
+  "py-2 font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
+
+function BreakdownTable({ estimate }: { estimate: VcmEstimate }) {
+  const rows = estimate.fields.flatMap((field) =>
+    field.practices.map((practice) => ({ field, practice }))
+  );
+
+  if (rows.length === 0) {
+    return (
+      <p className="border-y border-border py-6 text-sm text-muted-foreground">
+        No field-by-field breakdown is available for this estimate.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table
+        className="w-full min-w-[30rem] text-sm"
+        aria-label="Per-field carbon credit breakdown"
+      >
+        <thead>
+          <tr className="border-y border-border">
+            <th scope="col" className={`${HEAD_CELL} pr-4 text-left`}>
+              Field
+            </th>
+            <th scope="col" className={`${HEAD_CELL} pr-4 text-left`}>
+              Practice
+            </th>
+            <th scope="col" className={`${HEAD_CELL} pl-4 text-right`}>
+              Acres ac
+            </th>
+            <th scope="col" className={`${HEAD_CELL} pl-4 text-right`}>
+              Est. credits
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {rows.map(({ field, practice }) => (
+            <tr key={`${field.field_id}-${practice.practice_code}`}>
+              <td className="py-2.5 pr-4 font-medium text-foreground">
+                {field.field_name}
+              </td>
+              <td className="py-2.5 pr-4 text-muted-foreground">
+                {practice.practice_name}
+              </td>
+              <td className="py-2.5 pl-4 text-right font-mono tabular-nums text-muted-foreground">
+                {formatAcres(field.acres, { short: true })}
+              </td>
+              <td className="py-2.5 pl-4 text-right font-mono tabular-nums text-foreground">
+                {formatCredits(practice.estimated_credits)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {/* A heavy rule above the total, the way a ledger closes a column. */}
+          <tr className="border-t-2 border-rule-strong">
+            <td colSpan={3} className="py-2.5 pr-4 font-medium text-foreground">
+              Total estimated credits
+            </td>
+            <td className="py-2.5 pl-4 text-right font-mono font-medium tabular-nums text-foreground">
+              {formatCredits(estimate.estimated_total_credits)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
 }
 
-export function VcmDetail({ credit, fields }: VcmDetailProps) {
-  const breakdown = buildFieldBreakdown(credit, fields);
+interface VcmDetailProps {
+  credit: CreditEligibility;
+  /** From vcmEstimateFromReport(GET /credits/report). Omitted or null shows a fallback. */
+  estimate?: VcmEstimate | null;
+}
 
-  const totalCredits = breakdown.reduce(
-    (sum, row) => sum + row.estimatedCredits,
-    0
-  );
-  // Approximate market value at $18/credit (Soil Carbon Protocol mid-range)
-  const estimatedValue = Math.round(totalCredits * 18);
-
+export function VcmDetail({ credit, estimate }: VcmDetailProps) {
   function handleEnroll() {
     toast.info("Enrollment guide coming soon", {
-      description:
-        "We'll walk you through signing up for the Soil Carbon Protocol step by step.",
+      description: "We'll walk you through choosing a carbon program step by step.",
     });
   }
 
   return (
-    <section aria-labelledby="vcm-heading" className="space-y-4">
-      {/* Section header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/10">
-          <Leaf className="h-5 w-5 text-accent" aria-hidden="true" />
-        </div>
-        <div>
-          <h2
-            id="vcm-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            VCM Credit Estimator
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Voluntary Carbon Markets — sell carbon credits to buyers
-          </p>
-        </div>
-      </div>
+    <section aria-labelledby="vcm-heading">
+      <h2
+        id="vcm-heading"
+        className="font-heading text-xl font-semibold text-foreground"
+      >
+        VCM credit estimator
+      </h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Voluntary Carbon Markets — sell carbon credits to buyers
+      </p>
 
-      {/* Big number display */}
-      <Card>
-        <CardContent className="pt-6 pb-6">
-          <div className="flex flex-col items-center gap-1 text-center">
-            <div className="flex items-end gap-2">
-              <span
-                className="font-heading text-6xl font-bold text-foreground tabular-nums"
-                aria-label={`${totalCredits.toFixed(1)} estimated carbon credits`}
-              >
-                {totalCredits.toFixed(1)}
-              </span>
-              <span className="mb-2 text-lg font-medium text-muted-foreground">
-                credits
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground">
+      {estimate ? (
+        <>
+          <div className="mt-6">
+            <RuleHead label="Estimated credits per year" />
+            <p className="mt-3 font-mono text-[2rem] leading-none font-medium tabular-nums text-foreground">
+              {formatCredits(estimate.estimated_total_credits)}
+              <span className="ml-2 text-base text-muted-foreground">credits</span>
+            </p>
+            <p className="mt-2 text-sm text-muted-foreground">
               estimated per year across all fields
             </p>
-            <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-accent/10 px-3 py-1.5">
-              <TrendingUp className="h-4 w-4 text-accent" aria-hidden="true" />
-              <span className="text-sm font-semibold text-accent">
-                ~${estimatedValue.toLocaleString()} potential annual value
-              </span>
-            </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Based on ~$18/credit mid-market estimate
+              RegenAI estimate, not from a carbon registry
             </p>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Per-field breakdown table */}
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle className="text-base">Field-by-field breakdown</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {breakdown.length === 0 ? (
-            <p className="px-4 py-6 text-sm text-center text-muted-foreground">
-              No field data available. Add fields to your farm to see estimates.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" aria-label="Per-field carbon credit breakdown">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50">
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-left font-medium text-muted-foreground"
-                    >
-                      Field
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-left font-medium text-muted-foreground"
-                    >
-                      Practice
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-right font-medium text-muted-foreground"
-                    >
-                      Acres
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-right font-medium text-muted-foreground"
-                    >
-                      Est. credits
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {breakdown.map((row, idx) => (
-                    <tr
-                      key={`${row.fieldId}-${row.practice}-${idx}`}
-                      className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
-                    >
-                      <td className="px-4 py-3 font-medium text-foreground">
-                        {row.fieldName}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {row.practice}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-foreground">
-                        {row.acres.toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums font-semibold text-primary">
-                        {row.estimatedCredits.toFixed(1)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2 border-border bg-muted/50">
-                    <td
-                      colSpan={3}
-                      className="px-4 py-3 font-semibold text-foreground"
-                    >
-                      Total estimated credits
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums font-bold text-primary">
-                      {totalCredits.toFixed(1)}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
+          <div className="mt-6">
+            <RuleHead label="Field-by-field breakdown" />
+            <div className="mt-3">
+              <BreakdownTable estimate={estimate} />
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Program info */}
-      <div className="rounded-xl border border-border bg-card p-4 flex gap-3">
-        <div className="shrink-0 mt-0.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Sprout className="h-4 w-4 text-primary" aria-hidden="true" />
           </div>
-        </div>
-        <div className="space-y-1">
-          <p className="text-sm font-semibold text-foreground">
-            Soil Carbon Protocol
-          </p>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            The Soil Carbon Protocol is the leading methodology for certifying
-            carbon credits from row-crop farms in the US. It measures the
-            organic carbon your soil gains each year and converts it into
-            tradeable credits verified by an independent auditor.
-          </p>
-        </div>
+        </>
+      ) : (
+        <p className="mt-6 border-y border-border py-6 text-sm leading-relaxed text-muted-foreground">
+          No field-by-field credit estimate to show yet. It appears after your
+          farm is evaluated and practices like cover crops or no-till are marked
+          as done.
+        </p>
+      )}
+
+      <EdgeNote tone="info" title="Before you sign up" className="mt-6">
+        Each carbon program sets its own rules, payments, and contract length.
+        Compare programs and read the contract before you enroll.
+      </EdgeNote>
+
+      <div className="mt-5 flex flex-wrap gap-3">
+        <Button
+          onClick={handleEnroll}
+          className="min-h-12 cursor-pointer"
+          aria-label="Start carbon credit enrollment"
+        >
+          Start enrollment
+          <ArrowRight aria-hidden="true" />
+        </Button>
+        <HowCreditsDialog />
       </div>
 
-      {/* How credits are calculated — expandable */}
-      <HowCreditsDialog />
-
-      {/* Enroll CTA */}
-      <Button
-        onClick={handleEnroll}
-        className="w-full min-h-[48px] bg-accent text-accent-foreground hover:bg-accent/90 cursor-pointer font-semibold"
-        aria-label="Start carbon credit enrollment"
-      >
-        Start Enrollment
-        <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-      </Button>
-
       {credit.notes && (
-        <p className="text-xs text-muted-foreground text-center px-2">
-          {credit.notes}
-        </p>
+        <p className="mt-4 text-xs text-muted-foreground">{credit.notes}</p>
       )}
     </section>
   );

@@ -12,6 +12,29 @@ from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
+# Global test isolation
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _disable_rate_limiter():
+    """Disable slowapi limits during tests.
+
+    The limiter is a process-wide in-memory singleton (app.rate_limit), so
+    without this, request counts accumulate across TestClient instances and
+    router tests become order-dependent (429s once a limit such as 30/hour
+    is exhausted).
+    """
+    from app.rate_limit import limiter
+
+    previous = limiter.enabled
+    limiter.enabled = False
+    try:
+        yield
+    finally:
+        limiter.enabled = previous
+
+
+# ---------------------------------------------------------------------------
 # Supabase mock helpers
 # ---------------------------------------------------------------------------
 

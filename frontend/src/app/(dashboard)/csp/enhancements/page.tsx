@@ -1,15 +1,27 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Info, AlertCircle } from "lucide-react";
-import { Separator } from "@/components/ui/separator";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { ButtonLink } from "@/components/shared/button-link";
+import { LedgerRow, RuleHead } from "@/components/shared/record";
 
 import { CSPEnhancementList } from "@/components/csp/csp-enhancement-list";
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
+import { CSPRulesCitation } from "@/components/csp/csp-payment-summary";
 
 import { api } from "@/lib/api/server-client";
-import type { CSPEligibility, CSPEnhancement } from "@/lib/api/types";
+import {
+  adaptDeadlines,
+  adaptEnhancement,
+  ruleCitation,
+  ruleNotes,
+} from "@/lib/api/adapters";
+import type {
+  CSPDeadline,
+  CSPEnhancement,
+  CSPRuleCitation,
+  CSPRuleNotes,
+} from "@/lib/api/types";
+
+import { formatUsd, pluralize } from "@/lib/format";
 
 import type { Metadata } from "next";
 
@@ -17,67 +29,21 @@ export const metadata: Metadata = {
   title: "CSP Enhancements — RegenAI",
 };
 
-// ── Derive CSPEnhancement stubs from the active codes on the eligibility ──────
-// There is no dedicated /csp/enhancements endpoint. We build minimal enhancement
-// objects from the codes the eligibility response already carries so the UI has
-// real data to render instead of mocks.
-
-function deriveEnhancements(eligibility: CSPEligibility): CSPEnhancement[] {
-  return eligibility.active_enhancement_codes.map((code, index) => ({
-    id: `enh-${code}`,
-    code,
-    name: code,
-    category: "Conservation Activity",
-    land_use: "cropland",
-    description: `Enhancement activity ${code} is active on this farm.`,
-    implementation_notes:
-      "Contact your local NRCS office to confirm enhancement eligibility and finalize your selections.",
-    base_payment_rate: 0,
-    payment_unit: "acre",
-    is_bundle_eligible: false,
-    bundle_code: null,
-    eqip_practice_code: eligibility.qualifying_eqip_codes[index] ?? null,
-    point_weight: 0,
-    resource_concern_code: "",
-    status: "active" as const,
-    acres_enrolled: undefined,
-    estimated_payment: undefined,
-  }));
-}
-
 // ── Error state ───────────────────────────────────────────────────────────────
 
 function EnhancementsError({ message }: { message: string }) {
   return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground">
-          Enhancement Activities
+    <div className="max-w-[62ch] space-y-4 pb-20 sm:pb-0">
+      <div className="border-b-2 border-rule-strong pb-3">
+        <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground">
+          Conservation Activities
         </h1>
       </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
-            <AlertCircle
-              className="h-8 w-8 text-destructive"
-              aria-hidden="true"
-            />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              Could not load enhancements
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              {message}
-            </p>
-          </div>
-          <Link href="/farms">
-            <Button variant="outline" className="min-h-[48px] cursor-pointer">
-              Back to farms
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
+      <RuleHead label="Could not load enhancements" />
+      <p className="text-sm leading-relaxed text-muted-foreground">{message}</p>
+      <ButtonLink href="/farms" variant="outline">
+        Back to farms
+      </ButtonLink>
     </div>
   );
 }
@@ -100,136 +66,142 @@ export default async function CspEnhancementsPage({
   }
 
   let farmName: string;
-  let eligibility: CSPEligibility;
+  let enhancements: CSPEnhancement[];
+  let recommendedCodes: Set<string>;
+  let deadlines: CSPDeadline[];
+  let rules: CSPRuleCitation | null;
+  let notes: CSPRuleNotes | null;
 
   try {
-    const [farm, cspEligibility] = await Promise.all([
+    // Eligibility first: it persists the assessment that
+    // GET /csp/enhancements uses to rank activities against current gaps.
+    const [farm, eligibility] = await Promise.all([
       api.farms.get(farmId),
       api.csp.getEligibility(farmId),
     ]);
+    const [enhancementsResp, deadlinesResp] = await Promise.all([
+      api.csp.getEnhancements(farmId),
+      api.csp.getDeadlines(farm.state).catch(() => null),
+    ]);
+
     farmName = farm.name;
-    eligibility = cspEligibility;
+    enhancements = enhancementsResp.enhancements.map(adaptEnhancement);
+    recommendedCodes = new Set(eligibility.recommended_enhancements);
+    deadlines = adaptDeadlines(deadlinesResp);
+    rules = enhancementsResp.rules ? ruleCitation(enhancementsResp.rules) : null;
+    notes = enhancementsResp.rules ? ruleNotes(enhancementsResp.rules) : null;
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to load enhancements data.";
     return <EnhancementsError message={message} />;
   }
 
-  const enhancements = deriveEnhancements(eligibility);
-
-  const activeEnhancements = enhancements.filter(
-    (e) => e.status === "active" || e.status === "committed"
+  const gapClosingEnhancements = enhancements.filter((e) =>
+    recommendedCodes.has(e.code)
   );
-  const consideringEnhancements = enhancements.filter(
-    (e) => e.status === "considering"
+  const otherEnhancements = enhancements.filter(
+    (e) => !recommendedCodes.has(e.code)
   );
 
-  const totalSelectedPayment = activeEnhancements.reduce(
+  const gapClosingPayment = gapClosingEnhancements.reduce(
     (sum, e) => sum + (e.estimated_payment ?? 0),
     0
   );
 
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Breadcrumb */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link href="/farms" className="hover:text-foreground transition-colors">
+    <div className="space-y-8 pb-20 sm:pb-0">
+      {/* Breadcrumb + masthead */}
+      <div className="space-y-2">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link href="/farms" className="hover:text-foreground">
             {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farmId}`}
-            className="hover:text-foreground transition-colors"
+            href={`/csp?farm_id=${encodeURIComponent(farmId)}`}
+            className="hover:text-foreground"
           >
             CSP Navigator
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
-          <span className="text-foreground font-medium">Enhancements</span>
+          <span aria-current="page" className="font-medium text-foreground">
+            Enhancements
+          </span>
+        </nav>
+        <div className="border-b-2 border-rule-strong pb-3">
+          <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground sm:text-3xl">
+            Conservation Activities
+          </h1>
+          <p className="mt-2 font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+            Activities that add to your score and your payment
+          </p>
         </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Enhancement Activities
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Additional conservation activities that increase your score and
-          payment
-        </p>
       </div>
 
       {/* Deadline alerts */}
-      <CSPDeadlineBanners deadlines={eligibility.upcoming_deadlines} />
+      <CSPDeadlineBanners deadlines={deadlines} />
 
-      {/* Summary bar */}
-      {activeEnhancements.length > 0 && (
-        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-foreground">
-              {activeEnhancements.length} enhancement
-              {activeEnhancements.length !== 1 ? "s" : ""} selected
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Codes:{" "}
-              {activeEnhancements.map((e) => e.code).join(", ")}
-            </p>
+      {/* What is recommended */}
+      {gapClosingEnhancements.length > 0 && (
+        <section aria-labelledby="recommended-summary-heading" className="space-y-2">
+          <div className="rule-head">
+            <h2 id="recommended-summary-heading">Recommended for your gaps</h2>
+            <span aria-hidden="true" className="h-px flex-1 bg-rule" />
           </div>
-          {totalSelectedPayment > 0 && (
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Added to payment</p>
-              <p className="font-heading text-xl font-bold text-primary">
-                +${totalSelectedPayment.toLocaleString()}/yr
-              </p>
+          <LedgerRow
+            label={`${pluralize(gapClosingEnhancements.length, "Activity", "Activities")} recommended to close your gaps`}
+            note={gapClosingEnhancements.map((e) => e.name).join(", ")}
+            value={`${gapClosingEnhancements.length}`}
+          />
+          {gapClosingPayment > 0 && (
+            <div className="border-t border-rule pt-1">
+              <LedgerRow
+                label="Estimated value if you adopt them"
+                value={`+${formatUsd(gapClosingPayment)}/yr`}
+              />
             </div>
           )}
-        </div>
+        </section>
       )}
 
-      {/* Selected enhancements */}
-      {activeEnhancements.length > 0 && (
+      {/* Gap-closing enhancements */}
+      {gapClosingEnhancements.length > 0 && (
         <CSPEnhancementList
-          enhancements={activeEnhancements}
-          title="Your selected enhancements"
+          enhancements={gapClosingEnhancements}
+          title="Recommended to close your stewardship gaps"
           showEmpty={false}
         />
       )}
 
-      {activeEnhancements.length > 0 && consideringEnhancements.length > 0 && (
-        <Separator />
-      )}
-
       {/* Additional enhancements to consider */}
-      {consideringEnhancements.length > 0 && (
+      {otherEnhancements.length > 0 && (
         <CSPEnhancementList
-          enhancements={consideringEnhancements}
-          title="More enhancements to consider"
+          enhancements={otherEnhancements}
+          title="More activities to consider"
           showEmpty={false}
         />
       )}
 
       {enhancements.length === 0 && (
-        <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <p className="text-sm font-medium text-foreground mb-1">
-            No enhancements available yet
-          </p>
-          <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-            Complete your eligibility evaluation to see which enhancement
-            activities are relevant for your operation.
-          </p>
-        </div>
+        <p className="max-w-[62ch] text-sm text-muted-foreground">
+          No activities available yet. Complete your eligibility evaluation to
+          see which conservation activities are relevant for your operation.
+        </p>
       )}
 
-      {/* Info note */}
-      <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 px-4 py-4">
-        <Info
-          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          Enhancement selection will be interactive once connected to the live
-          API. Payment estimates shown are based on NRCS payment schedules and
-          your enrolled acres. Bundle-eligible enhancements pay at 115% when
-          applied together. Contact your NRCS office to confirm enhancement
-          eligibility and finalize your selections.
+      {/* How the list is put together */}
+      <div className="space-y-2 border-t border-rule pt-3">
+        <p className="max-w-[62ch] text-xs leading-relaxed text-muted-foreground">
+          Activities are ranked by how much they help close your current
+          stewardship gaps.
+          {notes && ` ${notes.activity_model} Per-acre rates: ${notes.activity_rate_basis}.`}{" "}
+          Contact your NRCS office to confirm activity eligibility and finalize
+          your selections.
         </p>
+        {rules && <CSPRulesCitation rules={rules} />}
       </div>
     </div>
   );

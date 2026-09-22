@@ -1,19 +1,14 @@
 import Link from "next/link";
-import {
-  CheckCircle2,
-  Circle,
-  ExternalLink,
-  Info,
-  ChevronRight,
-  AlertCircle,
-  ShieldCheck,
-} from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Check } from "lucide-react";
+import { ButtonLink } from "@/components/shared/button-link";
+import { EdgeNote, LedgerRow, RuleHead } from "@/components/shared/record";
 
 import { CSPDeadlineBanners } from "@/components/csp/csp-deadline-banner";
 import { api } from "@/lib/api/server-client";
+
+import { adaptDeadlines, adaptEligibility } from "@/lib/api/adapters";
+import { NRCS_DISCLAIMER, NRCS_SERVICE_CENTER_LOCATOR_URL } from "@/lib/csp-status";
+import { cn } from "@/lib/utils";
 
 import type { Metadata } from "next";
 import type { CSPChecklistItem, CSPEligibility } from "@/lib/api/types";
@@ -28,14 +23,20 @@ interface ChecklistPageProps {
 
 // ── Derive checklist from live eligibility data ───────────────────────────────
 
-function buildChecklist(eligibility: CSPEligibility, farmHasFields: boolean): {
-  overall_readiness_pct: number;
-  checklist: CSPChecklistItem[];
-} {
+function buildChecklist(
+  eligibility: CSPEligibility,
+  farmHasFields: boolean
+): CSPChecklistItem[] {
   const hasEnhancements = eligibility.active_enhancement_codes.length > 0;
   const hasCommitment = eligibility.rc_count_will_meet > 0;
-  const rcMet = eligibility.rc_count_above_threshold >= 2;
-  const readinessPct = eligibility.application_readiness_pct;
+  const rcMet = eligibility.meets_min_concerns;
+  const minRequired = eligibility.min_concerns_required;
+  const rcCount = eligibility.rc_count_above_threshold;
+  const additionalRequired = eligibility.additional_concerns_required;
+  const additionalAreas =
+    additionalRequired !== undefined
+      ? `at least ${additionalRequired} more conservation area${additionalRequired === 1 ? "" : "s"}`
+      : "additional conservation areas";
 
   const checklist: CSPChecklistItem[] = [
     {
@@ -48,21 +49,26 @@ function buildChecklist(eligibility: CSPEligibility, farmHasFields: boolean): {
       action: farmHasFields ? undefined : "Add fields in your farm settings",
     },
     {
-      item_id: "rc_threshold_2",
-      label: "Meets conservation threshold on 2 or more areas",
+      item_id: "rc_threshold_min",
+      label:
+        minRequired !== undefined
+          ? `Meets conservation threshold on ${minRequired} or more areas`
+          : "Meets conservation threshold on the required number of areas",
       completed: rcMet,
       detail: rcMet
-        ? `${eligibility.rc_count_above_threshold} of 8 resource concerns currently above the stewardship threshold`
-        : `${eligibility.rc_count_above_threshold} of 2 required areas met — additional practices needed`,
+        ? `${rcCount} of ${eligibility.resource_concerns_met.length} resource concerns currently above the stewardship threshold`
+        : minRequired !== undefined
+          ? `${rcCount} of ${minRequired} required areas met — additional practices needed`
+          : `${rcCount} areas met so far — additional practices needed`,
       action: rcMet ? undefined : "Review your resource concerns in the Eligibility tab",
     },
     {
       item_id: "commitment_selected",
-      label: "Committed to improving at least 1 more conservation area",
+      label: `Committed to improving ${additionalAreas}`,
       completed: hasCommitment,
       detail: hasCommitment
         ? "Enhancement activities selected and committed"
-        : "Select an enhancement activity to commit to meeting one additional resource concern",
+        : `Select enhancement activities to commit to improving ${additionalAreas}`,
       action: hasCommitment ? undefined : "Choose an enhancement to add to your committed list",
     },
     {
@@ -80,121 +86,121 @@ function buildChecklist(eligibility: CSPEligibility, farmHasFields: boolean): {
       completed: false,
       detail:
         "Final step: your local NRCS conservation planner will schedule a site visit and finalize your contract",
-      action:
-        "Find your local office at farmers.gov/contact/service-center-locator",
+      action: "Find your local NRCS office",
     },
   ];
 
-  return { overall_readiness_pct: readinessPct, checklist };
+  return checklist;
 }
 
-// ── Readiness bar ─────────────────────────────────────────────────────────────
+// ── Conservation-area count ───────────────────────────────────────────────────
 
-function ReadinessBar({ pct }: { pct: number }) {
-  const color =
-    pct >= 80 ? "bg-green-500" : pct >= 50 ? "bg-primary" : "bg-amber-500";
+// A plain count from the API (areas meeting the threshold out of all areas
+// scored), not a weighted readiness percentage.
+function ConcernProgress({ eligibility }: { eligibility: CSPEligibility }) {
+  const metCount = eligibility.rc_count_above_threshold;
+  const totalCount = eligibility.resource_concerns_met.length;
+  const minRequired = eligibility.min_concerns_required;
+  const meetsMin = eligibility.meets_min_concerns;
+
+  let summary: string;
+  if (meetsMin) {
+    summary =
+      minRequired !== undefined
+        ? `You meet the minimum of ${minRequired} areas for CSP eligibility.`
+        : "You meet the minimum number of areas for CSP eligibility.";
+  } else {
+    summary =
+      minRequired !== undefined
+        ? `You need at least ${minRequired} to be eligible.`
+        : "You need the required number of conservation areas to be eligible.";
+  }
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-end justify-between">
-        <p className="text-sm font-medium text-foreground">
-          Application readiness
-        </p>
-        <p className="font-heading text-2xl font-bold text-foreground">
-          {pct}%
-        </p>
-      </div>
-      <div
-        className="h-4 w-full rounded-full bg-muted overflow-hidden"
-        role="progressbar"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`Application readiness: ${pct}%`}
-      >
-        <div
-          className={`h-full rounded-full transition-all ${color}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {pct >= 80
-          ? "You are nearly ready to contact NRCS."
-          : pct >= 50
-            ? "Good progress. Complete the remaining items below."
-            : "Several items need attention before you apply."}
+    <div className="space-y-1">
+      <LedgerRow
+        label="Conservation areas meeting the threshold"
+        value={
+          <span className="text-lg font-medium text-foreground">
+            {totalCount > 0 ? `${metCount} of ${totalCount}` : metCount}
+          </span>
+        }
+      />
+      <p className="border-t border-rule pt-2 text-sm text-foreground">
+        {summary}
       </p>
     </div>
   );
 }
 
-// ── Single checklist item ─────────────────────────────────────────────────────
+// ── A box on a form ───────────────────────────────────────────────────────────
+
+function CheckBox({ checked }: { checked: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border",
+        checked ? "border-foreground text-foreground" : "border-border"
+      )}
+    >
+      {checked && <Check className="h-3 w-3" />}
+    </span>
+  );
+}
+
+// ── Single checklist row ──────────────────────────────────────────────────────
 
 function ChecklistRow({ item, farmId }: { item: CSPChecklistItem; farmId: string }) {
-  const isNrcsLink =
-    item.action?.startsWith("https://") ||
-    item.action?.includes("farmers.gov");
+  const isNrcsLink = item.item_id === "contact_nrcs";
 
   const isEnhancementsAction =
     item.item_id === "enhancements_selected" ||
     item.item_id === "commitment_selected";
 
   return (
-    <li
-      className={`flex items-start gap-3 rounded-xl border p-4 ${item.completed ? "border-green-200 bg-green-50" : "border-border bg-card"}`}
-    >
-      <div className="mt-0.5 shrink-0">
-        {item.completed ? (
-          <CheckCircle2
-            className="h-5 w-5 text-green-500"
-            aria-hidden="true"
-          />
-        ) : (
-          <Circle
-            className="h-5 w-5 text-muted-foreground/60"
-            aria-hidden="true"
-          />
-        )}
-      </div>
-      <div className="flex-1 min-w-0 space-y-1">
-        <p className="text-sm font-medium leading-snug text-foreground">
+    <li className="flex items-start gap-3 border-b border-rule py-3 last:border-0">
+      <CheckBox checked={item.completed} />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm leading-snug font-medium text-foreground">
           {item.label}
         </p>
-        <p className="text-xs text-muted-foreground leading-relaxed">
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
           {item.detail}
         </p>
-        {!item.completed && item.action && (
-          isNrcsLink ? (
+        {!item.completed &&
+          item.action &&
+          (isNrcsLink ? (
             <a
-              href="https://www.farmers.gov/contact/service-center-locator"
+              href={NRCS_SERVICE_CENTER_LOCATOR_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0 py-1"
+              className="inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline"
             >
               Find my local NRCS office
-              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              <span className="sr-only"> (opens in new tab)</span>
             </a>
           ) : isEnhancementsAction ? (
             <Link
-              href={`/csp/enhancements?farm_id=${farmId}`}
-              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline min-h-[44px] sm:min-h-0 py-1"
+              href={`/csp/enhancements?farm_id=${encodeURIComponent(farmId)}`}
+              className="inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline"
             >
               Browse enhancements
-              <ChevronRight className="h-3 w-3" aria-hidden="true" />
             </Link>
           ) : (
-            <p className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 rounded px-2 py-1 border border-amber-200 mt-0.5">
-              <ChevronRight className="h-3 w-3" aria-hidden="true" />
+            <p className="mt-1 text-xs font-medium text-warning-foreground">
               {item.action}
             </p>
-          )
-        )}
+          ))}
       </div>
-      {item.completed && (
-        <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-          Done
-        </span>
-      )}
+      <span
+        className={cn(
+          "shrink-0 font-mono text-[0.6875rem] tracking-[0.08em] uppercase",
+          item.completed ? "text-success" : "text-muted-foreground"
+        )}
+      >
+        {item.completed ? "Done" : "To do"}
+      </span>
     </li>
   );
 }
@@ -213,16 +219,16 @@ function ChecklistGroup({
   const completedCount = items.filter((i) => i.completed).length;
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {label}
-        </h2>
-        <span className="text-xs text-muted-foreground">
-          {completedCount}/{items.length}
-        </span>
-      </div>
-      <ul className="space-y-2" aria-label={label}>
+    <div className="space-y-2">
+      <RuleHead
+        label={label}
+        action={
+          <span className="font-mono text-[0.6875rem] text-foreground">
+            {completedCount}/{items.length}
+          </span>
+        }
+      />
+      <ul className="mt-1" aria-label={label}>
         {items.map((item) => (
           <ChecklistRow key={item.item_id} item={item} farmId={farmId} />
         ))}
@@ -235,42 +241,30 @@ function ChecklistGroup({
 
 function ErrorState({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-50">
-        <AlertCircle className="h-7 w-7 text-red-500" aria-hidden="true" />
-      </div>
-      <div>
-        <h2 className="font-heading text-lg font-semibold text-foreground">
-          Unable to load checklist
-        </h2>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{message}</p>
-      </div>
-      <Link href="/farms">
-        <Button variant="outline" className="min-h-[48px]">
-          Back to farms
-        </Button>
-      </Link>
+    <div className="max-w-[62ch] space-y-4 py-10">
+      <RuleHead label="Application checklist" />
+      <h2 className="font-heading text-xl font-semibold text-foreground">
+        Unable to load checklist
+      </h2>
+      <p className="text-sm text-muted-foreground">{message}</p>
+      <ButtonLink href="/farms" variant="outline">
+        Back to farms
+      </ButtonLink>
     </div>
   );
 }
 
 function NoFarmSelected() {
   return (
-    <div className="flex flex-col items-center gap-4 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted">
-        <ShieldCheck className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
-      </div>
-      <div>
-        <h2 className="font-heading text-lg font-semibold text-foreground">
-          Select a farm first
-        </h2>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-          Choose a farm to view your CSP application checklist.
-        </p>
-      </div>
-      <Link href="/farms">
-        <Button className="min-h-[48px]">Go to My Farms</Button>
-      </Link>
+    <div className="max-w-[62ch] space-y-4 py-10">
+      <RuleHead label="Application checklist" />
+      <h2 className="font-heading text-xl font-semibold text-foreground">
+        Select a farm first
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        Choose a farm to view your CSP application checklist.
+      </p>
+      <ButtonLink href="/farms">Go to My Farms</ButtonLink>
     </div>
   );
 }
@@ -293,12 +287,17 @@ export default async function CspChecklistPage({
   let hasFields: boolean;
 
   try {
-    const [elig, farm, fields] = await Promise.all([
+    const [eligibilityResp, farm, fields] = await Promise.all([
       api.csp.getEligibility(farmId),
       api.farms.get(farmId),
       api.fields.list(farmId),
     ]);
-    eligibility = elig;
+    const deadlinesResp = await api.csp
+      .getDeadlines(farm.state)
+      .catch(() => null);
+    eligibility = adaptEligibility(eligibilityResp, {
+      deadlines: adaptDeadlines(deadlinesResp),
+    });
     farmName = farm.name;
     hasFields = fields.length > 0;
   } catch (err) {
@@ -307,53 +306,62 @@ export default async function CspChecklistPage({
     return <ErrorState message={message} />;
   }
 
-  const { overall_readiness_pct, checklist } = buildChecklist(eligibility, hasFields);
+  const checklist = buildChecklist(eligibility, hasFields);
 
   const programItems = checklist.filter((i) =>
-    ["has_fields", "rc_threshold_2", "commitment_selected", "enhancements_selected"].includes(i.item_id)
+    ["has_fields", "rc_threshold_min", "commitment_selected", "enhancements_selected"].includes(i.item_id)
   );
   const nextStepItems = checklist.filter((i) =>
     ["contact_nrcs"].includes(i.item_id)
   );
 
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Breadcrumb */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link href="/farms" className="hover:text-foreground transition-colors">
+    <div className="space-y-8 pb-20 sm:pb-0">
+      {/* Breadcrumb + masthead */}
+      <div className="space-y-2">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link href="/farms" className="hover:text-foreground">
             {farmName}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
           <Link
-            href={`/csp?farm_id=${farmId}`}
-            className="hover:text-foreground transition-colors"
+            href={`/csp?farm_id=${encodeURIComponent(farmId)}`}
+            className="hover:text-foreground"
           >
             CSP Navigator
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
-          <span className="text-foreground font-medium">Checklist</span>
+          <span aria-current="page" className="font-medium text-foreground">
+            Checklist
+          </span>
+        </nav>
+        <div className="border-b-2 border-rule-strong pb-3">
+          <h1 className="font-heading text-[1.75rem] leading-tight font-bold text-foreground sm:text-3xl">
+            Application Checklist
+          </h1>
+          <p className="mt-2 font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+            What to have ready before contacting NRCS
+          </p>
         </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Application Checklist
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Everything you need to have ready before contacting NRCS
-        </p>
       </div>
 
       {/* Deadline alerts */}
       <CSPDeadlineBanners deadlines={eligibility.upcoming_deadlines} />
 
-      {/* Readiness bar */}
-      <Card>
-        <CardContent className="pt-5">
-          <ReadinessBar pct={overall_readiness_pct} />
-        </CardContent>
-      </Card>
+      {/* Where the farm stands */}
+      <section aria-labelledby="standing-heading" className="space-y-2">
+        <div className="rule-head">
+          <h2 id="standing-heading">Where you stand</h2>
+          <span aria-hidden="true" className="h-px flex-1 bg-rule" />
+        </div>
+        <ConcernProgress eligibility={eligibility} />
+      </section>
 
       {/* Checklist groups */}
-      <div className="space-y-6">
+      <div className="space-y-8">
         {programItems.length > 0 && (
           <ChecklistGroup
             label="Program requirements"
@@ -361,7 +369,6 @@ export default async function CspChecklistPage({
             farmId={farmId}
           />
         )}
-        <Separator />
         {nextStepItems.length > 0 && (
           <ChecklistGroup
             label="Next steps"
@@ -371,37 +378,26 @@ export default async function CspChecklistPage({
         )}
       </div>
 
-      {/* Missing requirements callout */}
+      {/* Missing requirements */}
       {eligibility.missing_requirements.length > 0 && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 space-y-2">
-          <p className="text-sm font-semibold text-amber-800">
-            Still needed to strengthen your application
-          </p>
-          <ul className="space-y-1">
+        <EdgeNote
+          tone="warning"
+          title="Still needed to strengthen your application"
+        >
+          <ul className="mt-1 space-y-1">
             {eligibility.missing_requirements.map((req, i) => (
-              <li key={i} className="flex items-start gap-2 text-xs text-amber-700">
-                <span aria-hidden="true" className="mt-1">•</span>
+              <li key={i} className="text-sm text-foreground">
                 {req}
               </li>
             ))}
           </ul>
-        </div>
+        </EdgeNote>
       )}
 
       {/* Disclaimer */}
-      <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 px-4 py-4">
-        <Info
-          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          CSP eligibility scores and payment estimates on this page are
-          calculated by RegenAI based on publicly available NRCS payment
-          schedules and your farm data. They are not official NRCS
-          determinations. Contact your local NRCS service center to submit an
-          application and receive official program determinations.
-        </p>
-      </div>
+      <p className="max-w-[62ch] border-t border-rule pt-3 text-xs leading-relaxed text-muted-foreground">
+        {NRCS_DISCLAIMER}
+      </p>
     </div>
   );
 }

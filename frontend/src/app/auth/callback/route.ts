@@ -15,6 +15,7 @@ export async function GET(request: Request) {
     if (!error) {
       return NextResponse.redirect(`${origin}${next}`);
     }
+    console.error("Auth callback: exchangeCodeForSession failed", error.message);
   }
 
   // Return the user to login with an error

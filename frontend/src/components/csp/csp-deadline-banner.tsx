@@ -1,149 +1,138 @@
-import { AlertTriangle, Clock, CalendarDays } from "lucide-react";
-import type { CSPDeadline, CSPDeadlineSeverity } from "@/lib/api/types";
+import { ExternalLink } from "lucide-react";
+import {
+  SourceLink,
+  daysLeftLabel,
+  formatDeadlineDate,
+  pickMostUrgentConfirmed,
+} from "@/components/shared/deadline-alerts";
+import { EdgeNote } from "@/components/shared/record";
+import { type Tone } from "@/lib/status-styles";
+import { cn } from "@/lib/utils";
+import type { CSPDeadline } from "@/lib/api/types";
 
-// ── Severity styling ──────────────────────────────────────────────────────────
+/**
+ * A sign-up cutoff noted in the margin: a bar down the left edge, the days
+ * remaining as a figure, the date, and the source it came from. This is the one
+ * place implement red-orange is used — a cutoff is the only thing on these
+ * sheets that runs out.
+ */
 
-function severityStyles(severity: CSPDeadlineSeverity): {
-  wrapper: string;
-  icon: string;
-  heading: string;
-} {
-  if (severity === "urgent") {
-    return {
-      wrapper: "border-red-300 bg-red-50",
-      icon: "text-red-600",
-      heading: "text-red-800",
-    };
-  }
-  if (severity === "warning") {
-    return {
-      wrapper: "border-amber-300 bg-amber-50",
-      icon: "text-amber-600",
-      heading: "text-amber-800",
-    };
-  }
-  // upcoming
-  return {
-    wrapper: "border-primary/30 bg-primary/5",
-    icon: "text-primary",
-    heading: "text-primary",
-  };
+function edgeTone(d: CSPDeadline): Tone {
+  // A sign-up cutoff is the one place the implement red-orange belongs.
+  if (d.alert_severity === "urgent") return "accent";
+  if (d.alert_severity === "soon") return "warning";
+  return "info";
 }
 
-function SeverityIcon({
-  severity,
-  className,
-}: {
-  severity: CSPDeadlineSeverity;
-  className?: string;
-}) {
-  if (severity === "urgent") {
-    return <AlertTriangle className={className} aria-hidden="true" />;
-  }
-  if (severity === "warning") {
-    return <Clock className={className} aria-hidden="true" />;
-  }
-  return <CalendarDays className={className} aria-hidden="true" />;
-}
-
-function formatDate(isoDate: string): string {
-  const d = new Date(isoDate);
-  return d.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-// ── Single banner ─────────────────────────────────────────────────────────────
+// ── Dated deadline banner ─────────────────────────────────────────────────────
 
 interface CSPDeadlineBannerProps {
   deadline: CSPDeadline;
 }
 
-export function CSPDeadlineBanner({ deadline }: CSPDeadlineBannerProps) {
-  const styles = severityStyles(deadline.alert_severity);
+export function CSPDeadlineBanner({ deadline: d }: CSPDeadlineBannerProps) {
+  if (!d.cutoff_date || d.days_until === null) {
+    return <NotAnnouncedNotice deadline={d} />;
+  }
+  const urgent = d.alert_severity === "urgent";
 
   return (
-    <div
-      role="alert"
-      className={`flex items-start gap-3 rounded-xl border px-4 py-3.5 ${styles.wrapper}`}
-    >
-      <SeverityIcon
-        severity={deadline.alert_severity}
-        className={`mt-0.5 h-5 w-5 shrink-0 ${styles.icon}`}
-      />
-      <div className="min-w-0 space-y-0.5">
-        <p className={`text-sm font-semibold leading-snug ${styles.heading}`}>
-          {deadline.alert_severity === "urgent"
-            ? "Deadline in " + deadline.days_until + " days"
-            : deadline.alert_severity === "warning"
-              ? `${deadline.days_until} days until cutoff`
-              : `Upcoming: ${deadline.days_until} days away`}
-          {deadline.is_act_now && (
-            <span className="ml-2 rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
-              ACT NOW window
-            </span>
+    <div role={urgent ? "alert" : undefined}>
+      <EdgeNote tone={edgeTone(d)}>
+        <p
+          className={cn(
+            "font-mono text-xs tracking-[0.08em] uppercase",
+            urgent ? "text-accent" : "text-muted-foreground"
           )}
+        >
+          {daysLeftLabel(d.days_until)} &middot; {d.program}
         </p>
-        <p className="text-sm text-foreground font-medium">{deadline.cutoff_name}</p>
-        <p className="text-xs text-muted-foreground">
-          {formatDate(deadline.cutoff_date)}
+        <p className="mt-1 text-base leading-snug font-semibold text-foreground">
+          {d.cutoff_name}
         </p>
-        {deadline.description && (
-          <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-            {deadline.description}
+        <p className="font-mono text-sm text-foreground">
+          Apply by {formatDeadlineDate(d.cutoff_date, "long")}
+        </p>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+          {d.description}
+        </p>
+        {d.notes && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {d.notes}
           </p>
         )}
-        {deadline.is_act_now &&
-          deadline.act_now_start &&
-          deadline.act_now_end && (
-            <p className="text-xs text-muted-foreground">
-              ACT NOW window:{" "}
-              {new Date(deadline.act_now_start).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-              })}{" "}
-              &ndash;{" "}
-              {new Date(deadline.act_now_end).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </p>
-          )}
-      </div>
+        <SourceLink
+          href={d.source_url}
+          asOf={d.as_of}
+          className="text-muted-foreground"
+        />
+      </EdgeNote>
     </div>
   );
 }
 
-// ── List of banners (filters to urgent/warning only by default) ───────────────
+// ── Not announced notice ──────────────────────────────────────────────────────
+
+function NotAnnouncedNotice({ deadline: d }: CSPDeadlineBannerProps) {
+  return (
+    <EdgeNote tone="neutral">
+      <p className="text-base leading-snug font-semibold text-foreground">
+        {d.cutoff_name}
+      </p>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+        Not announced yet. Check your state NRCS office. You can still apply any
+        time.
+      </p>
+      <div className="flex flex-wrap items-center gap-x-3 font-mono text-xs text-muted-foreground">
+        <a
+          href={d.source_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-h-12 items-center gap-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline"
+        >
+          Visit your state NRCS office
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="sr-only">(opens in new tab)</span>
+        </a>
+        <span>Checked {formatDeadlineDate(d.as_of)}</span>
+      </div>
+    </EdgeNote>
+  );
+}
+
+// ── Banner group ──────────────────────────────────────────────────────────────
 
 interface CSPDeadlineBannersProps {
   deadlines: CSPDeadline[];
-  /** Show upcoming deadlines too (not just urgent/warning) */
+  /** Show every confirmed deadline instead of only the most urgent one. */
   showAll?: boolean;
 }
 
+/**
+ * Shows the most urgent confirmed deadline for the farm's state (or all of
+ * them with `showAll`), plus a plain notice when the state's NRCS cutoff has
+ * not been announced. Renders nothing when there is nothing to show.
+ */
 export function CSPDeadlineBanners({
   deadlines,
   showAll = false,
 }: CSPDeadlineBannersProps) {
-  const filtered = showAll
-    ? deadlines.filter((d) => d.alert_severity !== "passed")
-    : deadlines.filter(
-        (d) =>
-          d.alert_severity === "urgent" || d.alert_severity === "warning",
-      );
+  const primary = pickMostUrgentConfirmed(deadlines);
+  const confirmed = showAll
+    ? deadlines.filter((d) => d.status === "confirmed" && d.cutoff_date)
+    : primary
+      ? [primary]
+      : [];
+  const notAnnounced = deadlines.find((d) => d.status === "not_announced");
 
-  if (filtered.length === 0) return null;
+  if (confirmed.length === 0 && !notAnnounced) return null;
 
   return (
     <div className="space-y-3" aria-label="Application deadline alerts">
-      {filtered.map((d) => (
+      {confirmed.map((d) => (
         <CSPDeadlineBanner key={d.deadline_id} deadline={d} />
       ))}
+      {notAnnounced && <NotAnnouncedNotice deadline={notAnnounced} />}
     </div>
   );
 }

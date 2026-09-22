@@ -17,14 +17,6 @@ from app.routers import activities, credits, csp, documents, farms, fields, heal
 API_V1_PREFIX = "/api/v1"
 
 # ---------------------------------------------------------------------------
-# Rate limiting
-# The limiter singleton lives in app.rate_limit to avoid the circular import
-# that would arise if routers imported from app.main (which imports them).
-# Individual endpoint limits are applied via @limiter.limit() in each router.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Request ID middleware for log correlation
 # ---------------------------------------------------------------------------
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -49,6 +41,7 @@ app = FastAPI(
     redoc_url="/redoc" if not settings.is_production else None,
 )
 
+# The limiter lives in app.rate_limit so routers never import app.main (circular).
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

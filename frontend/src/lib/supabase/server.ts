@@ -3,20 +3,14 @@ import "server-only";
 import { createServerClient } from "@supabase/ssr";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
+import { isDevAuthBypassEnabled } from "./dev-bypass";
 
-// Production guard: never allow auth bypass in production
-if (
-  process.env.DEV_AUTH_BYPASS === "true" &&
-  process.env.NODE_ENV === "production"
-) {
-  throw new Error(
-    "DEV_AUTH_BYPASS cannot be enabled in production. Remove it from your environment."
-  );
-}
+// Fail fast at module load if the bypass is enabled in production
+isDevAuthBypassEnabled();
 
 export async function createClient() {
   // DEV ONLY: bypass auth with anon key (no service role key exposure)
-  if (process.env.DEV_AUTH_BYPASS === "true") {
+  if (isDevAuthBypassEnabled()) {
     return createSupabaseClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!

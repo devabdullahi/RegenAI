@@ -1,67 +1,99 @@
+import { RuleHead, Stamp } from "@/components/shared/record";
+import { getCspStatusConfig } from "@/lib/csp-status";
+import { cn } from "@/lib/utils";
 import type { CSPScore } from "@/lib/api/types";
 
-// ── Score label color mapping ─────────────────────────────────────────────────
+// ── Printed scale ─────────────────────────────────────────────────────────────
 
-function scoreLabelColor(label: CSPScore["score_label"]): string {
-  if (label === "Excellent") return "text-green-600";
-  if (label === "Good") return "text-primary";
-  if (label === "Fair") return "text-amber-600";
-  return "text-red-600";
+/** Ticks every 10 points, the way a ruled scale is engraved. */
+const TICKS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
+function clampPct(value: number): number {
+  return Math.min(100, Math.max(0, value));
 }
 
-function scoreBarColor(score: number): string {
-  if (score >= 70) return "bg-green-500";
-  if (score >= 50) return "bg-primary";
-  if (score >= 30) return "bg-amber-500";
-  return "bg-red-500";
+/**
+ * Keep a mark's label inside the measure: it is centred in the middle of the
+ * scale, but pinned at either end so a score of 0 or 100 is not clipped.
+ */
+function labelPlacement(pct: number): { left: string; translate: string } {
+  if (pct <= 8) return { left: "0%", translate: "translateX(0)" };
+  if (pct >= 92) return { left: "100%", translate: "translateX(-100%)" };
+  return { left: `${pct}%`, translate: "translateX(-50%)" };
 }
 
-// ── Sub-bar: individual resource concern ─────────────────────────────────────
-
-interface ScoreBreakdownRowProps {
-  label: string;
-  pointsEarned: number;
-  maxPoints: number;
-  currentlyMet: boolean;
+interface ScoreScaleProps {
+  score: number;
+  threshold: number | null;
 }
 
-function ScoreBreakdownRow({
-  label,
-  pointsEarned,
-  maxPoints,
-  currentlyMet,
-}: ScoreBreakdownRowProps) {
-  const pct = maxPoints > 0 ? Math.round((pointsEarned / maxPoints) * 100) : 0;
+/**
+ * The score as a mark on a ruled scale: ink bar for the farm's own reading,
+ * a labelled rule for the estimated state ranking threshold. No arc, no glow.
+ */
+function ScoreScale({ score, threshold }: ScoreScaleProps) {
+  const pct = clampPct(score);
+  const thresholdPct = threshold === null ? null : clampPct(threshold);
+  const scoreLabel = labelPlacement(pct);
+  const thresholdLabel =
+    thresholdPct === null ? null : labelPlacement(thresholdPct);
 
   return (
-    <li className="space-y-1">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full ${currentlyMet ? "bg-green-500" : "bg-muted-foreground/40"}`}
-            aria-hidden="true"
-          />
-          <span className="sr-only">{currentlyMet ? "Met" : "Not met"}</span>
-          <span className="text-sm text-foreground truncate">{label}</span>
-        </div>
-        <span className="shrink-0 text-xs font-medium text-muted-foreground">
-          {pointsEarned}/{maxPoints} pts
+    <div className="pt-1">
+      <div className="relative h-16" aria-hidden="true">
+        {/* Score figure, printed above its mark */}
+        <span
+          className="absolute top-0 font-mono text-xs font-medium whitespace-nowrap text-foreground"
+          style={{ left: scoreLabel.left, transform: scoreLabel.translate }}
+        >
+          {score} pts
         </span>
-      </div>
-      <div
-        className="h-1.5 w-full rounded-full bg-muted overflow-hidden"
-        role="progressbar"
-        aria-valuenow={pointsEarned}
-        aria-valuemin={0}
-        aria-valuemax={maxPoints}
-        aria-label={`${label}: ${pointsEarned} of ${maxPoints} points`}
-      >
-        <div
-          className={`h-full rounded-full transition-all ${currentlyMet ? "bg-green-500" : "bg-muted-foreground/40"}`}
+
+        {/* Baseline rule with its ticks */}
+        <span className="absolute inset-x-0 top-8 h-px bg-rule" />
+        {TICKS.map((tick) => (
+          <span
+            key={tick}
+            className="absolute top-8 h-1.5 w-px bg-rule"
+            style={{ left: `${tick}%` }}
+          />
+        ))}
+
+        {/* The farm's own reading, measured from zero */}
+        <span
+          className="absolute top-[1.9375rem] left-0 h-[3px] bg-primary"
           style={{ width: `${pct}%` }}
         />
+        <span
+          className="absolute top-5 h-5 w-[2px] bg-primary"
+          style={{ left: `${pct}%`, transform: "translateX(-50%)" }}
+        />
+
+        {/* Estimated state ranking threshold */}
+        {thresholdPct !== null && thresholdLabel !== null && (
+          <>
+            <span
+              className="absolute top-6 h-4 w-px bg-rule-strong"
+              style={{ left: `${thresholdPct}%`, transform: "translateX(-50%)" }}
+            />
+            <span
+              className="absolute top-11 font-mono text-[0.6875rem] whitespace-nowrap text-muted-foreground"
+              style={{
+                left: thresholdLabel.left,
+                transform: thresholdLabel.translate,
+              }}
+            >
+              Est. threshold {threshold} pts
+            </span>
+          </>
+        )}
       </div>
-    </li>
+
+      <div className="flex items-center justify-between font-mono text-[0.6875rem] text-muted-foreground">
+        <span>0 pts</span>
+        <span>100 pts</span>
+      </div>
+    </div>
   );
 }
 
@@ -69,7 +101,7 @@ function ScoreBreakdownRow({
 
 interface CSPScoreGaugeProps {
   score: CSPScore;
-  /** Show the per-concern breakdown list */
+  /** Show the per-concern breakdown table */
   showBreakdown?: boolean;
 }
 
@@ -79,109 +111,107 @@ export function CSPScoreGauge({
 }: CSPScoreGaugeProps) {
   const {
     stewardship_score,
-    score_label,
-    percentile_estimate,
+    eligibility_status,
     score_breakdown,
-    bonus_points,
+    ranking_threshold,
   } = score;
 
-  const pct = Math.min(100, Math.max(0, stewardship_score));
+  const status = getCspStatusConfig(eligibility_status);
+  // The threshold is a per-state estimate from the API. When the state has
+  // published none, say so plainly: no number, and no gap calculated from one.
+  const threshold =
+    typeof ranking_threshold === "number" && Number.isFinite(ranking_threshold)
+      ? ranking_threshold
+      : null;
+  const clearsThreshold =
+    threshold === null ? null : stewardship_score >= threshold;
+  const gap = threshold === null ? null : Math.abs(stewardship_score - threshold);
+
+  let verdict: string;
+  if (threshold === null) {
+    verdict =
+      "Your state has not published a ranking threshold, so there is no score to compare yours against. NRCS ranks applications in your state.";
+  } else if (clearsThreshold) {
+    verdict = `Clears the estimated state ranking threshold of ${threshold} pts by ${gap} pts.`;
+  } else {
+    verdict = `${gap} pts below the estimated state ranking threshold of ${threshold} pts.`;
+  }
 
   return (
-    <div className="space-y-5">
-      {/* Main score display */}
-      <div className="flex items-end gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-            Your stewardship score
-          </p>
-          <div className="flex items-baseline gap-2">
-            <span
-              className={`font-heading text-5xl font-bold leading-none ${scoreLabelColor(score_label)}`}
-              aria-label={`Stewardship score: ${stewardship_score} out of 100`}
-            >
-              {stewardship_score}
-            </span>
-            <span className="text-lg text-muted-foreground font-medium">/100</span>
-          </div>
-        </div>
-        <div className="mb-1 space-y-0.5">
-          <span
-            className={`inline-flex rounded-full px-2.5 py-0.5 text-sm font-semibold ${
-              score_label === "Excellent"
-                ? "bg-green-100 text-green-700"
-                : score_label === "Good"
-                  ? "bg-primary/10 text-primary"
-                  : score_label === "Fair"
-                    ? "bg-amber-100 text-amber-700"
-                    : "bg-red-100 text-red-700"
-            }`}
-          >
-            {score_label}
-          </span>
-          <p className="text-base font-semibold text-foreground capitalize">
-            {percentile_estimate} for Iowa
-          </p>
-        </div>
+    <div className="space-y-4">
+      {/* The reading */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2">
+        <span className="font-mono text-[1.75rem] leading-none font-medium text-foreground">
+          {stewardship_score}
+        </span>
+        <span className="font-mono text-sm text-muted-foreground">
+          pts of 100 pts
+        </span>
+        <Stamp tone={status.tone} className="ml-auto">
+          {status.shortLabel}
+        </Stamp>
       </div>
 
-      {/* Main progress bar with threshold marker */}
-      <div className="space-y-1.5">
-        <div className="relative">
-          <div
-            className="h-4 w-full rounded-full bg-muted overflow-hidden"
-            role="progressbar"
-            aria-valuenow={pct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`Overall stewardship score: ${pct} out of 100`}
-          >
-            <div
-              className={`h-full rounded-full transition-all ${scoreBarColor(pct)}`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          {/* ACT NOW threshold marker — overlaid at the 60% position */}
-          <div
-            className="absolute top-0 h-4 w-0.5 bg-amber-500"
-            style={{ left: "60%" }}
-            aria-hidden="true"
-          />
-        </div>
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>0</span>
-          <span className="text-sm font-semibold text-amber-600">
-            Iowa ACT NOW threshold: 60
-          </span>
-          <span>100</span>
-        </div>
-      </div>
+      <ScoreScale score={stewardship_score} threshold={threshold} />
 
-      {/* Bonus points note */}
-      {bonus_points > 0 && (
-        <p className="text-xs text-muted-foreground rounded-lg bg-primary/5 border border-primary/20 px-3 py-2">
-          Includes {bonus_points} bonus points for Mississippi River Basin
-          watershed location.
-        </p>
-      )}
+      <p className="text-sm text-foreground">{verdict}</p>
 
       {/* Per-concern breakdown */}
       {showBreakdown && score_breakdown.length > 0 && (
-        <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Points by conservation area
-          </p>
-          <ul className="space-y-3" aria-label="Score breakdown by resource concern">
-            {score_breakdown.map((item) => (
-              <ScoreBreakdownRow
-                key={item.code}
-                label={item.resource_concern}
-                pointsEarned={item.points_earned}
-                maxPoints={item.max_points}
-                currentlyMet={item.currently_met}
-              />
-            ))}
-          </ul>
+        <div className="space-y-2 pt-2">
+          <RuleHead label="Points by conservation area" />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[20rem] text-sm">
+              <caption className="sr-only">
+                Points earned by conservation area
+              </caption>
+              <thead>
+                <tr className="border-b border-rule">
+                  <th
+                    scope="col"
+                    className="py-1.5 text-left font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase"
+                  >
+                    Area
+                  </th>
+                  <th
+                    scope="col"
+                    className="py-1.5 text-right font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase"
+                  >
+                    Points
+                  </th>
+                  <th
+                    scope="col"
+                    className="py-1.5 pl-3 text-right font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase"
+                  >
+                    Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {score_breakdown.map((item) => (
+                  <tr key={item.code} className="border-b border-rule last:border-0">
+                    <th
+                      scope="row"
+                      className="py-2 pr-3 text-left text-sm font-normal text-foreground"
+                    >
+                      {item.resource_concern}
+                    </th>
+                    <td className="py-2 text-right font-mono text-sm whitespace-nowrap text-foreground">
+                      {item.points_earned} / {item.max_points} pts
+                    </td>
+                    <td
+                      className={cn(
+                        "py-2 pl-3 text-right font-mono text-[0.6875rem] tracking-[0.08em] uppercase",
+                        item.currently_met ? "text-success" : "text-muted-foreground"
+                      )}
+                    >
+                      {item.currently_met ? "Met" : "Not met"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

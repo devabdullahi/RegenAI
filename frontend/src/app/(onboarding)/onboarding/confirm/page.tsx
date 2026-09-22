@@ -16,16 +16,35 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { OnboardingProgress } from "@/components/shared/onboarding-progress";
+import { api, ApiRequestError } from "@/lib/api/client";
+import {
+  ONBOARDING_STORAGE_KEYS,
+  US_STATE_NAMES,
+  isGoalId,
+  practiceLabel,
+  toPracticeCodes,
+  type GoalId,
+} from "@/lib/onboarding";
+import {
+  safeGetJSON,
+  safeGetString,
+  safeRemove,
+  safeSetJSON,
+  safeSetString,
+} from "@/lib/storage";
 
 // ---- Types ----
 interface FarmData {
   name: string;
   state: string;
   county: string;
+  /** 5-digit county FIPS code. Missing on data saved before this field existed. */
+  county_fips?: string;
   total_acres: number;
 }
 
 interface FieldEntry {
+  /** Client-only id generated during onboarding (not the database id). */
   id: string;
   name: string;
   acres: number;
@@ -33,48 +52,55 @@ interface FieldEntry {
   boundary_description: string;
 }
 
-type GoalId = "cost_savings" | "carbon_credits" | "both";
-
 const GOAL_LABELS: Record<GoalId, string> = {
   cost_savings: "Reduce input costs",
   carbon_credits: "Earn carbon credits",
   both: "Both — reduce costs and earn carbon credits",
 };
 
-const PRACTICE_LABELS: Record<string, string> = {
-  cover_crops: "Cover crops",
-  no_till: "No-till",
-  reduced_till: "Reduced-till",
-  crop_rotation: "Crop rotation",
-  nutrient_management: "Nutrient management plan",
-  manure_application: "Manure application",
-  integrated_pest: "Integrated pest management",
-  conservation_cover: "Conservation cover",
-};
-
-const US_STATE_NAMES: Record<string, string> = {
-  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
-  CO: "Colorado", CT: "Connecticut", DE: "Delaware", FL: "Florida", GA: "Georgia",
-  HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa",
-  KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
-  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi",
-  MO: "Missouri", MT: "Montana", NE: "Nebraska", NV: "Nevada", NH: "New Hampshire",
-  NJ: "New Jersey", NM: "New Mexico", NY: "New York", NC: "North Carolina",
-  ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
-  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee",
-  TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
-  WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
-};
-
 // ---- Helpers ----
-function readStorage<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
+function errorMessage(err: unknown): string {
+  if (err instanceof ApiRequestError) {
+    if (err.code === 0) {
+      return "We couldn't reach the server. Check your internet connection.";
+    }
+    return err.message;
   }
+  if (err instanceof Error && err.message) return err.message;
+  return "Something went wrong.";
+}
+
+/** Returns a farmer-friendly problem description, or null if the data is ready to save. */
+function findMissingInfo(
+  farm: FarmData,
+  fields: FieldEntry[]
+): { title: string; description: string } | null {
+  if (!farm.name?.trim() || !/^[A-Z]{2}$/.test(farm.state ?? "")) {
+    return {
+      title: "Some farm details are missing.",
+      description: "Tap \"Edit\" next to Farm and fill in the name and state.",
+    };
+  }
+  if (!/^\d{5}$/.test(farm.county_fips ?? "")) {
+    return {
+      title: "We need your county code.",
+      description:
+        "Tap \"Edit\" next to Farm and add the 5-digit county code so we can pull your local soil and weather.",
+    };
+  }
+  if (!(farm.total_acres > 0)) {
+    return {
+      title: "Total acres is missing.",
+      description: "Tap \"Edit\" next to Farm and enter your total acres.",
+    };
+  }
+  if (fields.length === 0) {
+    return {
+      title: "Add at least one field.",
+      description: "Tap \"Edit\" next to Fields to add a field before starting.",
+    };
+  }
+  return null;
 }
 
 // ---- Summary section component ----
@@ -95,7 +121,7 @@ function SummarySection({
         </h2>
         <Link
           href={editHref}
-          className="flex items-center gap-1.5 text-sm font-medium text-primary hover:underline transition-colors min-h-[44px] px-2 cursor-pointer"
+          className="flex items-center gap-1.5 text-sm font-medium text-primary hover:underline transition-colors min-h-12 px-2 cursor-pointer"
           aria-label={`Edit ${title}`}
         >
           <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
@@ -115,36 +141,131 @@ export default function ConfirmPage() {
   const [practices, setPractices] = useState<string[]>([]);
   const [goal, setGoal] = useState<GoalId | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasPartialSave, setHasPartialSave] = useState(false);
 
-  // Hydrate from localStorage after mount
+  // Hydrate from localStorage after mount (not available during prerender)
   useEffect(() => {
-    setFarm(readStorage<FarmData | null>("onboarding_farm", null));
-    setFields(readStorage<FieldEntry[]>("onboarding_fields", []));
-    setPractices(readStorage<string[]>("onboarding_practices", []));
-    const rawGoal = localStorage.getItem("onboarding_goal") as GoalId | null;
-    setGoal(rawGoal);
+    /* eslint-disable react-hooks/set-state-in-effect -- one-time hydration from localStorage */
+    setFarm(safeGetJSON<FarmData | null>(ONBOARDING_STORAGE_KEYS.farm, null));
+    const savedFields = safeGetJSON<unknown>(ONBOARDING_STORAGE_KEYS.fields, []);
+    setFields(Array.isArray(savedFields) ? (savedFields as FieldEntry[]) : []);
+    const savedPractices = safeGetJSON<unknown>(ONBOARDING_STORAGE_KEYS.practices, []);
+    setPractices(Array.isArray(savedPractices) ? (savedPractices as string[]) : []);
+    const savedGoal = safeGetString(ONBOARDING_STORAGE_KEYS.goal);
+    setGoal(isGoalId(savedGoal) ? savedGoal : null);
+    setHasPartialSave(Boolean(safeGetString(ONBOARDING_STORAGE_KEYS.createdFarmId)));
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   async function handleStartAnalysis() {
+    if (!farm || isSubmitting) return;
+
+    const problem = findMissingInfo(farm, fields);
+    if (problem) {
+      toast.error(problem.title, { description: problem.description });
+      return;
+    }
+
     setIsSubmitting(true);
 
-    // Simulated 2-second analysis delay
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // ---- 1. Create the farm (skip if a previous attempt already created it) ----
+    let farmId = safeGetString(ONBOARDING_STORAGE_KEYS.createdFarmId);
+    if (!farmId) {
+      try {
+        const createdFarm = await api.farms.create({
+          name: farm.name.trim(),
+          state: farm.state,
+          county_fips: farm.county_fips!,
+          total_acres: farm.total_acres,
+          ...(goal ? { goals: goal } : {}),
+        });
+        farmId = createdFarm.id;
+        safeSetString(ONBOARDING_STORAGE_KEYS.createdFarmId, farmId);
+        setHasPartialSave(true);
+      } catch (err) {
+        console.error("Onboarding: failed to create farm", err);
+        toast.error("We couldn't save your farm.", {
+          description: `${errorMessage(err)} Your answers are still here — please try again.`,
+          duration: 8000,
+        });
+        setIsSubmitting(false);
+        return;
+      }
+    }
 
-    // Clean up localStorage
-    [
-      "onboarding_farm",
-      "onboarding_fields",
-      "onboarding_practices",
-      "onboarding_goal",
-    ].forEach((key) => localStorage.removeItem(key));
+    // ---- 2. Create each field (skip ones already created on a previous attempt) ----
+    const createdFieldIds = safeGetJSON<Record<string, string>>(
+      ONBOARDING_STORAGE_KEYS.createdFieldIds,
+      {}
+    );
+    const practiceCodes = toPracticeCodes(practices);
 
-    toast.success("Farm setup complete! Your analysis is ready.", {
-      description: "Welcome to RegenAI — your recommendations are loading.",
+    for (const field of fields) {
+      if (createdFieldIds[field.id]) continue;
+      try {
+        const boundary = field.boundary_description?.trim();
+        const createdField = await api.fields.create({
+          farm_id: farmId,
+          name: field.name.trim(),
+          acres: field.acres,
+          crop_type: field.crop_type,
+          practices: practiceCodes,
+          ...(boundary ? { boundary_description: boundary } : {}),
+        });
+        createdFieldIds[field.id] = createdField.id;
+        safeSetJSON(ONBOARDING_STORAGE_KEYS.createdFieldIds, createdFieldIds);
+      } catch (err) {
+        console.error(`Onboarding: failed to create field "${field.name}"`, err);
+        toast.error(`Your farm was saved, but the field "${field.name}" wasn't.`, {
+          description: `${errorMessage(err)} Tap the button again to finish — we won't create your farm twice.`,
+          duration: 8000,
+        });
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
+    // ---- 3. Kick off soil/weather lookup + recommendations (non-blocking) ----
+    const fieldIds = fields
+      .map((f) => createdFieldIds[f.id])
+      .filter((id): id is string => Boolean(id));
+    const savedFarmId = farmId;
+
+    void Promise.allSettled(fieldIds.map((id) => api.fields.enrich(id)))
+      .then(async (enrichResults) => {
+        const enrichFailed = enrichResults.filter((r) => r.status === "rejected");
+        if (enrichFailed.length > 0) {
+          console.warn("Onboarding: field enrichment failed", enrichFailed);
+        }
+        let recsFailed = false;
+        try {
+          await api.recommendations.generate(savedFarmId);
+        } catch (err) {
+          recsFailed = true;
+          console.warn("Onboarding: recommendation generation failed", err);
+        }
+        if (enrichFailed.length > 0 || recsFailed) {
+          toast.warning("Your farm is saved, but your analysis is still catching up.", {
+            description:
+              "We couldn't finish pulling soil, weather, or recommendations. Your farm and fields are saved.",
+            duration: 8000,
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn("Onboarding: background analysis error", err);
+      });
+
+    // ---- 4. Farm + fields are saved: clear onboarding data and go to dashboard ----
+    safeRemove(...Object.values(ONBOARDING_STORAGE_KEYS));
+
+    toast.success("Your farm is saved!", {
+      description:
+        "We're pulling your soil and weather data and building your recommendations now.",
       duration: 5000,
     });
 
-    router.push("/farms");
+    router.push(`/dashboard?farm=${encodeURIComponent(savedFarmId)}`);
   }
 
   // Loading state while hydrating
@@ -155,8 +276,8 @@ export default function ConfirmPage() {
         <div className="flex flex-col gap-4">
           <div className="h-8 w-48 rounded-lg bg-muted animate-pulse" />
           <div className="h-4 w-72 rounded-lg bg-muted animate-pulse" />
-          <div className="h-40 w-full rounded-xl bg-muted animate-pulse" />
-          <div className="h-40 w-full rounded-xl bg-muted animate-pulse" />
+          <div className="h-40 w-full animate-pulse bg-muted" />
+          <div className="h-40 w-full animate-pulse bg-muted" />
           <div className="h-12 w-full rounded-lg bg-muted animate-pulse" />
         </div>
       </div>
@@ -169,7 +290,7 @@ export default function ConfirmPage() {
     <div className="flex flex-col gap-6">
       <OnboardingProgress currentStep={6} />
 
-      <div>
+      <div className="border-b-2 border-rule-strong pb-4">
         <h1 className="font-heading text-2xl font-bold">
           Everything look right?
         </h1>
@@ -187,14 +308,20 @@ export default function ConfirmPage() {
           {/* Farm details */}
           <SummarySection title="Farm" editHref="/onboarding/farm">
             <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center border border-border bg-card">
                 <MapPin className="h-5 w-5 text-primary" aria-hidden="true" />
               </div>
               <div>
                 <p className="text-lg font-semibold">{farm.name}</p>
                 <p className="text-base text-muted-foreground">
                   {farm.county}, {US_STATE_NAMES[farm.state] ?? farm.state}
+                  {farm.county_fips ? ` · County code ${farm.county_fips}` : ""}
                 </p>
+                {!farm.county_fips && (
+                  <p className="text-sm text-destructive">
+                    County code missing — tap Edit to add it.
+                  </p>
+                )}
                 <p className="text-base text-muted-foreground">
                   {farm.total_acres.toLocaleString()} total acres
                 </p>
@@ -223,7 +350,7 @@ export default function ConfirmPage() {
                         className="h-4 w-4 shrink-0 text-primary"
                         aria-hidden="true"
                       />
-                      <span className="text-base font-medium">{field.name}</span>
+                      <span>{field.name}</span>
                       <span className="flex gap-1.5 ml-auto">
                         <Badge variant="secondary" className="text-sm">
                           {field.acres} ac
@@ -255,7 +382,7 @@ export default function ConfirmPage() {
                       className="mr-1.5 h-3.5 w-3.5 text-primary"
                       aria-hidden="true"
                     />
-                    {PRACTICE_LABELS[p] ?? p}
+                    {practiceLabel(p)}
                   </Badge>
                 ))}
               </div>
@@ -282,16 +409,22 @@ export default function ConfirmPage() {
         <div
           role="status"
           aria-live="polite"
-          className="flex items-center justify-center gap-3 rounded-xl border border-border bg-card px-6 py-4"
+          className="flex items-center justify-center gap-3 border border-border bg-card px-6 py-4"
         >
           <Loader2
             className="h-5 w-5 shrink-0 animate-spin text-primary"
             aria-hidden="true"
           />
-          <span className="text-base font-medium">
-            Analyzing your farm data — this only takes a moment&hellip;
+          <span>
+            Saving your farm and fields — this only takes a moment&hellip;
           </span>
         </div>
+      )}
+
+      {!isSubmitting && hasPartialSave && (
+        <p className="text-sm text-muted-foreground text-center">
+          Your farm was already saved. Tap the button to finish saving your fields.
+        </p>
       )}
 
       {/* CTA */}
@@ -299,7 +432,8 @@ export default function ConfirmPage() {
         type="button"
         onClick={handleStartAnalysis}
         disabled={isSubmitting}
-        className="h-14 w-full bg-accent text-accent-foreground hover:bg-accent/90 text-lg font-bold cursor-pointer disabled:cursor-not-allowed"
+        size="lg"
+        className="w-full cursor-pointer disabled:cursor-not-allowed"
       >
         {isSubmitting ? (
           <>
@@ -307,8 +441,10 @@ export default function ConfirmPage() {
               className="mr-2 h-5 w-5 animate-spin"
               aria-hidden="true"
             />
-            Analyzing&hellip;
+            Saving&hellip;
           </>
+        ) : hasPartialSave ? (
+          "Finish Setup"
         ) : (
           "Start My Analysis"
         )}
