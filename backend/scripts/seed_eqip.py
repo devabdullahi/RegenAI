@@ -1,85 +1,75 @@
-"""Seed EQIP practice codes into the database.
+"""Upsert EQIP practice codes from supabase/seed.sql into a Supabase project.
 
-These are the most common NRCS conservation practice standards
-relevant to regenerative agriculture in the US Midwest.
+supabase/seed.sql is the single source of truth for eqip_practices; this
+script parses its INSERT values so hosted projects (where `supabase db reset`
+is not run) get exactly the same rows. Never add practice data here.
 
-Run: python -m scripts.seed_eqip
+Run from backend/: poetry run python scripts/seed_eqip.py
 Requires: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env
 """
 
 import os
+import re
+import sys
+from pathlib import Path
+
 from dotenv import load_dotenv
 from supabase import create_client
 
-load_dotenv()
+SEED_SQL_PATH = Path(__file__).resolve().parents[2] / "supabase" / "seed.sql"
 
-EQIP_PRACTICES = [
-    {"code": "328", "name": "Conservation Crop Rotation", "category": "Cropland Soil Health",
-     "description": "Growing crops in a planned sequence on the same field to improve soil health, reduce erosion, and manage pests.",
-     "unit": "acre"},
-    {"code": "329", "name": "Residue and Tillage Management, No-Till", "category": "Cropland Soil Health",
-     "description": "Managing crop residue by limiting soil disturbance to only the planting operation.",
-     "unit": "acre"},
-    {"code": "340", "name": "Cover Crop", "category": "Cropland Soil Health",
-     "description": "Planting grasses, legumes, or forbs to provide seasonal cover for soil health and erosion control.",
-     "unit": "acre"},
-    {"code": "345", "name": "Residue and Tillage Management, Reduced Till", "category": "Cropland Soil Health",
-     "description": "Managing crop residue with reduced mechanical tillage to maintain at least 30% ground cover.",
-     "unit": "acre"},
-    {"code": "590", "name": "Nutrient Management", "category": "Nutrient Management",
-     "description": "Managing the amount, source, placement, and timing of plant nutrients and soil amendments.",
-     "unit": "acre"},
-    {"code": "595", "name": "Integrated Pest Management", "category": "Pest Management",
-     "description": "A site-specific combination of pest prevention, avoidance, monitoring, and suppression strategies.",
-     "unit": "acre"},
-    {"code": "412", "name": "Grassed Waterway", "category": "Water Quality",
-     "description": "A natural or constructed channel shaped or graded and established with suitable vegetation.",
-     "unit": "acre"},
-    {"code": "393", "name": "Filter Strip", "category": "Water Quality",
-     "description": "A strip of vegetation between cropland and a water body to remove sediment and nutrients.",
-     "unit": "acre"},
-    {"code": "382", "name": "Fence", "category": "Grazing Management",
-     "description": "A constructed barrier to facilitate management of livestock or wildlife.",
-     "unit": "foot"},
-    {"code": "512", "name": "Forage and Biomass Planting", "category": "Forage",
-     "description": "Establishing adapted plants for forage production, erosion control, or bioenergy feedstock.",
-     "unit": "acre"},
-    {"code": "528", "name": "Prescribed Grazing", "category": "Grazing Management",
-     "description": "Managing grazing and browsing to improve or maintain vegetation health.",
-     "unit": "acre"},
-    {"code": "327", "name": "Conservation Cover", "category": "Cropland Soil Health",
-     "description": "Establishing and maintaining perennial vegetative cover to protect soil and water resources.",
-     "unit": "acre"},
-    {"code": "449", "name": "Irrigation Water Management", "category": "Water Management",
-     "description": "Determining and controlling the rate, amount, and timing of irrigation water.",
-     "unit": "acre"},
-    {"code": "612", "name": "Tree/Shrub Establishment", "category": "Agroforestry",
-     "description": "Establishing woody plants by planting seedlings or cuttings.",
-     "unit": "acre"},
-    {"code": "380", "name": "Windbreak/Shelterbelt Establishment", "category": "Agroforestry",
-     "description": "Rows of trees or shrubs to reduce wind erosion and protect crops.",
-     "unit": "foot"},
-]
+_COLUMNS = ("code", "name", "category", "description", "unit")
+_INSERT_START = "insert into public.eqip_practices (code, name, category, description, unit)"
+_SQL_STRING = r"'((?:[^']|'')*)'"
+_ROW_PATTERN = re.compile(r"\(\s*" + r"\s*,\s*".join([_SQL_STRING] * len(_COLUMNS)) + r"\s*\)")
+_ROW_START_PATTERN = re.compile(r"^\s*\('", re.MULTILINE)
 
 
-def main():
+def parse_seed_practices(sql_text: str) -> list[dict[str, str]]:
+    """Return the eqip_practices rows from the seed.sql INSERT statement.
+
+    Raises:
+        ValueError: if the INSERT is missing or any row does not match the
+            five-string-literal shape (so a malformed row is never skipped).
+    """
+    start = sql_text.lower().find(_INSERT_START)
+    if start == -1:
+        raise ValueError("eqip_practices INSERT not found in seed.sql")
+    end = sql_text.lower().find("on conflict", start)
+    values_block = sql_text[start + len(_INSERT_START) : end if end != -1 else None]
+    values_block = "\n".join(
+        line for line in values_block.splitlines() if not line.lstrip().startswith("--")
+    )
+
+    rows = [
+        {column: value.replace("''", "'") for column, value in zip(_COLUMNS, match.groups())}
+        for match in _ROW_PATTERN.finditer(values_block)
+    ]
+    expected_row_count = len(_ROW_START_PATTERN.findall(values_block))
+    if not rows or len(rows) != expected_row_count:
+        raise ValueError(
+            f"Parsed {len(rows)} rows but seed.sql has {expected_row_count} value tuples; "
+            "every row must be ('code', 'name', 'category', 'description', 'unit')"
+        )
+    return rows
+
+
+def main() -> int:
+    load_dotenv()
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
     if not url or not key:
         print("Error: Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env")
-        return
+        return 1
+
+    practices = parse_seed_practices(SEED_SQL_PATH.read_text(encoding="utf-8"))
+    print(f"Seeding {len(practices)} EQIP practice codes from {SEED_SQL_PATH}...")
 
     supabase = create_client(url, key)
-
-    print(f"Seeding {len(EQIP_PRACTICES)} EQIP practice codes...")
-
-    result = supabase.table("eqip_practices").upsert(
-        EQIP_PRACTICES, on_conflict="code"
-    ).execute()
-
+    result = supabase.table("eqip_practices").upsert(practices, on_conflict="code").execute()
     print(f"Done. {len(result.data)} practices upserted.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
