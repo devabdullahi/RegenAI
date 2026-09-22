@@ -32,6 +32,8 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Misc
 *.log
@@ -48,6 +50,7 @@ regenai_agent_execution_brief.md
 # Claude / AI files
 .claude/
 claude_output/
+# Remove the next line to share CLAUDE.md with the team
 **/CLAUDE.md
 **/AGENTS.md
 
