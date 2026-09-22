@@ -35,6 +35,8 @@ RegenAI/
 │   │   ├── services/       all business logic (see §4)
 │   │   └── tasks/          empty (Celery not implemented)
 │   ├── scripts/seed_eqip.py   seeds the eqip_practices reference table
+│   ├── scripts/seed_demo_farm.py  demo farm: 4 fields, a season of activities, 5 years of yields
+│   ├── scripts/generate_county_centroids.py  regenerates app/data/county_centroids.json
 │   ├── tests/          pytest suite, all using mocked Supabase
 │   └── Dockerfile      python:3.11-slim + WeasyPrint system libs, non-root user
 ├── frontend/           Next.js 16 App Router (React 19, Tailwind v4, shadcn/ui "base-nova", lucide)
@@ -167,7 +169,9 @@ Everything below except `/health` is mounted under **`/api/v1`**. Parameters tha
 
 ## 7. Local development
 
-`scripts/dev.ps1` (Windows) runs all of the below in one command; `-NoDatabase` skips Supabase when Docker is unavailable, `-Stop` shuts it down.
+`scripts/setup.ps1` (Windows) is the one-command path: preflight, env check, migrations to a hosted Supabase project via the CLI, seeds, the same checks CI runs, then it starts the stack. `-SkipDb` skips migrations, `-NoRun` stops after the checks, `-SeedDemo <email>` adds the demo farm. It refuses to start the app while a check is failing.
+
+`scripts/dev.ps1` is the narrower tool it delegates to: dependencies and running the servers. `-NoDatabase` skips Supabase when Docker is unavailable, `-PrepareOnly` installs dependencies and exits, `-Stop` shuts everything down.
 
 ```bash
 supabase start                                   # Postgres :54322, API :54321, Studio :54323, Inbucket :54324
