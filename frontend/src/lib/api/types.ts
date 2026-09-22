@@ -234,12 +234,16 @@ export type DocumentType = "soil_report" | "field_photo" | "compliance";
 export interface Document {
   id: string;
   farm_id: string;
-  user_id: string;
+  /** Null on rows uploaded before these columns existed. */
+  user_id: string | null;
   doc_type: DocumentType;
-  file_name: string;
+  /** Null on rows uploaded before these columns existed. */
+  file_name: string | null;
   storage_path: string;
-  size_bytes: number;
+  /** Null on rows uploaded before these columns existed. */
+  size_bytes: number | null;
   description: string | null;
+  uploaded_at: string | null;
   created_at: string;
 }
 

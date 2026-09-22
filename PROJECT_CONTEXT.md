@@ -141,6 +141,9 @@ Everything below except `/health` is mounted under **`/api/v1`**. Parameters tha
 | `…000004_csp_seed_data` | CSP reference data |
 | `…000005_field_activity_log` | `field_activities`, `yield_history` |
 | `20260422000006_add_indexes` | Indexes |
+| `20260913000007_csp_fy2026_activities` | FY2026 CSP activity list keyed by NRCS practice code |
+| `20260913000008_fix_write_paths` | Columns the API already wrote, `farm-documents` bucket + storage policies, widened CSP status CHECK, `weather_cache` UPDATE policy, deprecated FY2025 rows |
+| `20260920000009_rls_update_with_check` | `WITH CHECK` added to nine UPDATE policies |
 
 ---
 
