@@ -28,6 +28,10 @@
 .PARAMETER Reinstall
     Force dependency reinstall (rebuilds the backend venv).
 
+.PARAMETER PrepareOnly
+    Install dependencies and exit without starting anything. Lets setup.ps1
+    reuse this dependency logic instead of duplicating it.
+
 .EXAMPLE
     .\scripts\dev.ps1
 .EXAMPLE
@@ -41,6 +45,7 @@ param(
     [switch] $Seed,
     [switch] $Stop,
     [switch] $Reinstall,
+    [switch] $PrepareOnly,
     [int]    $BackendPort  = 8000,
     [int]    $FrontendPort = 3000
 )
@@ -320,6 +325,12 @@ if ($usePoetry) {
     & $venvPy -m pip install --quiet @PipPackages
     if ($LASTEXITCODE -ne 0) { Write-Err2 "pip install failed"; exit 1 }
     Write-Ok "backend packages installed (including tzdata)"
+}
+
+if ($PrepareOnly) {
+    Write-Step "Dependencies ready"
+    Write-Ok "backend installed; skipping servers because -PrepareOnly was passed"
+    exit 0
 }
 
 # ---------------------------------------------------------------------------

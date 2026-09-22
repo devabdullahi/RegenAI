@@ -13,6 +13,10 @@ function isProductionBuildPhase(): boolean {
   return process.env.NEXT_PHASE === "phase-production-build";
 }
 
+// next build renders every page in several workers, and each one would print
+// the warning again. Once per process is enough to be seen.
+let warnedDuringBuild = false;
+
 export function isDevAuthBypassEnabled(): boolean {
   const enabled = process.env.DEV_AUTH_BYPASS === "true";
 
@@ -21,10 +25,13 @@ export function isDevAuthBypassEnabled(): boolean {
   // Production guard: never serve requests with auth bypassed.
   if (process.env.NODE_ENV === "production") {
     if (isProductionBuildPhase()) {
-      console.warn(
-        "DEV_AUTH_BYPASS is set. It is ignored in production builds and will " +
-          "fail at runtime — remove it before deploying."
-      );
+      if (!warnedDuringBuild) {
+        warnedDuringBuild = true;
+        console.warn(
+          "DEV_AUTH_BYPASS is set. It is ignored in production builds and will " +
+            "fail at runtime — remove it before deploying."
+        );
+      }
       return false;
     }
     throw new Error(

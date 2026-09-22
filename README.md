@@ -257,8 +257,30 @@ A database trigger (`on_auth_user_created`) automatically creates a row in `publ
 
 ### Quick start (Windows)
 
-`scripts/dev.ps1` does everything below in one command — Supabase, backend and
-frontend — and stops them all on Ctrl+C:
+`scripts/setup.ps1` takes a fresh clone to a running app in one command:
+preflight, environment check, database migrations and seeds, the same checks CI
+runs, then it starts the stack.
+
+```powershell
+# First run against a hosted Supabase project
+.\scripts\setup.ps1 -ProjectRef <your-project-ref> -SeedDemo you@example.com
+
+# Day to day (migrations already applied)
+.\scripts\setup.ps1 -SkipDb
+
+# Just tell me what CI will say, don't start anything
+.\scripts\setup.ps1 -NoRun
+```
+
+It asks for the database password (or reads `SUPABASE_DB_PASSWORD`), applies
+`supabase/migrations` with the Supabase CLI via `npx` (no Docker needed for a
+hosted project), seeds `eqip_practices`, and optionally seeds a demo farm with
+fields, activities and five years of yield history. It refuses to start the app
+while any check is failing, and prints every warning again at the end.
+
+`scripts/dev.ps1` is the narrower tool underneath: it owns dependencies and
+running the servers — Supabase, backend and frontend — and stops them all on
+Ctrl+C:
 
 ```powershell
 .\scripts\dev.ps1               # full stack
