@@ -116,6 +116,8 @@ _ELIGIBILITY_KEYS = {
     "resource_concerns_detail", "cart_score", "state_ranking_threshold",
     "meets_ranking_threshold", "eligibility_notes", "recommended_enhancements",
     "is_estimate", "scoring_rules", "evaluated_at",
+    # Additive: reports a failed assessment write instead of a silent success.
+    "warnings",
 }
 _RULES_KEYS = {
     "program", "as_of", "source_title", "source_url", "contract_limit",

@@ -11,12 +11,15 @@ Coverage targets:
 
 import json
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from postgrest.exceptions import APIError
 from tests.conftest import FARM_ID
 
 from app.services.csp_eligibility import (
+    ASSESSMENT_NOT_SAVED_WARNING,
     evaluate_csp_eligibility,
     _MAX_RECOMMENDED_ACTIVITIES,
     _MIN_CONCERNS_MEETING_THRESHOLD,
@@ -89,10 +92,15 @@ def _supabase_for_score(
 
 
 def _make_supabase_with_upsert():
-    """Supabase mock where upsert succeeds silently."""
+    """Supabase mock where the upsert succeeds and returns the written row.
+
+    A real successful upsert returns the row. Returning no rows means RLS
+    filtered the write out, which the service must report rather than treat as
+    success, so that case belongs in its own test.
+    """
     mock = MagicMock()
     upsert_chain = MagicMock()
-    upsert_chain.execute.return_value = MagicMock(data=None)
+    upsert_chain.execute.return_value = MagicMock(data=[{"farm_id": "farm-uuid-1234"}])
     mock.table.return_value.upsert.return_value = upsert_chain
     return mock
 
@@ -623,3 +631,57 @@ class TestUnknownRankingThreshold:
         assert result["meets_ranking_threshold"] is True
         payload = supabase.table.return_value.upsert.call_args[0][0]
         assert payload["act_now_eligible"] is True
+
+
+class TestAssessmentPersistenceIsReported:
+    """A lost write must never be reported to the caller as a clean success."""
+
+    @pytest.mark.asyncio
+    async def test_successful_upsert_reports_no_warnings(self):
+        score_data = _supabase_for_score(50.0, "IA", 3, 47.0)
+        mock = _make_supabase_with_upsert()
+
+        with patch(
+            "app.services.csp_eligibility.calculate_stewardship_score",
+            new=AsyncMock(return_value=score_data),
+        ):
+            result = await evaluate_csp_eligibility("farm-uuid-1234", mock)
+
+        assert result["warnings"] == []
+
+    @pytest.mark.asyncio
+    async def test_zero_row_upsert_is_reported_not_treated_as_success(self, caplog):
+        """RLS filtering the write out returns no rows; that is a lost write."""
+        score_data = _supabase_for_score(50.0, "IA", 3, 47.0)
+        mock = _make_supabase_with_upsert()
+        mock.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+
+        with caplog.at_level(logging.ERROR):
+            with patch(
+                "app.services.csp_eligibility.calculate_stewardship_score",
+                new=AsyncMock(return_value=score_data),
+            ):
+                result = await evaluate_csp_eligibility("farm-uuid-1234", mock)
+
+        assert ASSESSMENT_NOT_SAVED_WARNING in result["warnings"]
+        assert "farm-uuid-1234" in caplog.text
+        # The computed answer is still returned so the page keeps working.
+        assert result["status"]
+
+    @pytest.mark.asyncio
+    async def test_upsert_api_error_is_reported_to_the_caller(self, caplog):
+        score_data = _supabase_for_score(50.0, "IA", 3, 47.0)
+        mock = _make_supabase_with_upsert()
+        mock.table.return_value.upsert.return_value.execute.side_effect = APIError(
+            {"message": "new row violates row-level security policy", "code": "42501"}
+        )
+
+        with caplog.at_level(logging.ERROR):
+            with patch(
+                "app.services.csp_eligibility.calculate_stewardship_score",
+                new=AsyncMock(return_value=score_data),
+            ):
+                result = await evaluate_csp_eligibility("farm-uuid-1234", mock)
+
+        assert ASSESSMENT_NOT_SAVED_WARNING in result["warnings"]
+        assert "farm-uuid-1234" in caplog.text
