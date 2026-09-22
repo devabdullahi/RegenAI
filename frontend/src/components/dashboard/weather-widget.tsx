@@ -1,14 +1,14 @@
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Sun, CloudRain, Thermometer, Droplets } from "lucide-react";
+import { Cloud, CloudRain } from "lucide-react";
+import { LedgerRow, RuleHead, Sheet } from "@/components/shared/record";
+import { formatDate, formatNumber } from "@/lib/format";
 import type { WeatherData } from "@/lib/api/types";
 
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MM_PER_INCH = 25.4;
+
+/** The backend stores Open-Meteo temperatures in °C; farmers read °F. */
+function celsiusToFahrenheit(celsius: number | null): number | null {
+  return celsius === null ? null : (celsius * 9) / 5 + 32;
+}
 
 function getSoilTempNote(soilTemp: number): string {
   if (soilTemp >= 55) return "Great for planting most crops";
@@ -18,35 +18,78 @@ function getSoilTempNote(soilTemp: number): string {
   return "Too cold for field work right now";
 }
 
-function DayCard({ day }: { day: WeatherData }) {
-  const date = new Date(day.date + "T12:00:00");
-  const dayName = DAY_NAMES[date.getUTCDay()];
-  const hasRain = day.precip_mm > 0;
+function formatDegrees(celsius: number | null): string {
+  const fahrenheit = celsiusToFahrenheit(celsius);
+  const formatted = formatNumber(fahrenheit, { maxFractionDigits: 0 });
+  return fahrenheit === null ? formatted : `${formatted}°F`;
+}
+
+/** Rain in inches with its unit, e.g. "0.4 in". */
+function formatInches(precipMm: number): string {
+  return `${formatNumber(precipMm / MM_PER_INCH, { maxFractionDigits: 1 })} in`;
+}
+
+/** Today's calendar date as YYYY-MM-DD in the viewer's (or server's) time zone. */
+function todayIsoDate(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Split stored forecast rows into "today" and the days shown in the strip.
+ * Rows are kept from the last enrichment, so they can be stale: today is the
+ * row dated today, else the most recent past row, else the first future row.
+ */
+function selectForecast(weather: WeatherData[]) {
+  const byDate = [...weather].sort((a, b) => a.date.localeCompare(b.date));
+  const today = todayIsoDate();
+  const pastOrToday = byDate.filter((d) => d.date <= today);
+  const current = pastOrToday[pastOrToday.length - 1] ?? byDate[0];
+  const days = byDate.filter((d) => d.date >= (current?.date ?? today));
+  return { current, days, isToday: current?.date === today };
+}
+
+/** The one icon that earns its place here: what the sky is doing. */
+function RainIcon({ precipMm }: { precipMm: number | null }) {
+  if (precipMm === null) {
+    return <Cloud className="h-5 w-5 text-muted-foreground" aria-label="Rain unknown" />;
+  }
+  if (precipMm > 0) {
+    return <CloudRain className="h-5 w-5 text-weather" aria-label="Rain expected" />;
+  }
+  return <Cloud className="h-5 w-5 text-muted-foreground" aria-label="No rain" />;
+}
+
+/** One column of the forecast strip: day, sky, high, low, rain. */
+function DayColumn({ day, label }: { day: WeatherData; label: string }) {
+  const hasRain = day.precip_mm !== null && day.precip_mm > 0;
 
   return (
-    <div className="flex min-w-[64px] flex-1 flex-col items-center gap-1 rounded-xl bg-muted/50 px-2 py-3">
-      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        {dayName}
+    <div className="flex min-w-[68px] flex-1 flex-col items-center gap-1.5 px-2 py-3">
+      <span className="font-mono text-[0.6875rem] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+        {label}
       </span>
-      <div className="my-1">
-        {hasRain ? (
-          <CloudRain className="h-6 w-6 text-blue-500" aria-label="Rain expected" />
+      <RainIcon precipMm={day.precip_mm} />
+      <span className="font-mono text-sm font-medium text-foreground">
+        <span className="sr-only">High </span>
+        {formatDegrees(day.temp_high)}
+      </span>
+      <span className="font-mono text-xs text-muted-foreground">
+        <span className="sr-only">Low </span>
+        {formatDegrees(day.temp_low)}
+      </span>
+      <span className="font-mono text-xs text-weather">
+        {hasRain && day.precip_mm !== null ? (
+          <>
+            <span className="sr-only">Rain </span>
+            {formatInches(day.precip_mm)}
+          </>
         ) : (
-          <Sun className="h-6 w-6 text-amber-400" aria-label="Sunny" />
+          <span aria-hidden="true">&nbsp;</span>
         )}
-      </div>
-      <span className="text-sm font-semibold text-foreground">
-        {day.temp_high}&deg;
       </span>
-      <span className="text-xs text-muted-foreground">{day.temp_low}&deg;</span>
-      {hasRain && (
-        <div className="mt-0.5 flex items-center gap-0.5">
-          <Droplets className="h-3 w-3 text-blue-400" />
-          <span className="text-[10px] text-blue-500 font-medium">
-            {Math.round(day.precip_mm / 25.4 * 10) / 10}&quot;
-          </span>
-        </div>
-      )}
     </div>
   );
 }
@@ -60,76 +103,57 @@ export function WeatherWidget({ weather }: WeatherWidgetProps) {
     return <WeatherWidgetEmpty />;
   }
 
-  const todayData = weather[0];
-  const soilTemp = todayData?.soil_temp;
+  const { current, days, isToday } = selectForecast(weather);
+  const soilTemp = celsiusToFahrenheit(current?.soil_temp ?? null);
+  const title = days.length === 1 ? "Weather" : `${days.length}-day forecast`;
 
   return (
-    <Card>
-      <CardHeader className="border-b pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold font-heading">
-          <Sun className="h-5 w-5 text-amber-400" />
-          5-Day Forecast
-        </CardTitle>
-      </CardHeader>
+    <Sheet className="p-4">
+      <RuleHead label={title} />
 
-      <CardContent className="pt-3">
-        {/* Day strip */}
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-          {weather.map((day) => (
-            <DayCard key={day.id} day={day} />
-          ))}
-        </div>
+      {!isToday && current && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Latest forecast starts {formatDate(current.date)}.
+        </p>
+      )}
 
-        {/* Soil temp callout */}
-        {soilTemp !== undefined && (
-          <div className="mt-4 flex items-start gap-3 rounded-xl bg-primary/5 border border-primary/20 px-4 py-3">
-            <Thermometer className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-            <div>
-              <p className="text-sm font-semibold text-foreground">
-                Soil temp: {soilTemp}&deg;F
-              </p>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                {getSoilTempNote(soilTemp)}
-              </p>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {/* Day strip — columns divided by hairlines, figures in one column each */}
+      <div className="mt-3 flex divide-x divide-border overflow-x-auto border-y border-border">
+        {days.map((day, index) => (
+          <DayColumn
+            key={day.id}
+            day={day}
+            label={
+              index === 0 && isToday
+                ? "Today"
+                : formatDate(day.date, { weekday: "short" })
+            }
+          />
+        ))}
+      </div>
+
+      <LedgerRow
+        className="mt-1"
+        label="Soil temp"
+        note={
+          soilTemp === null
+            ? "No soil temperature reading for this day."
+            : getSoilTempNote(soilTemp)
+        }
+        value={soilTemp === null ? "—" : `${formatNumber(soilTemp)}°F`}
+      />
+    </Sheet>
   );
 }
 
 export function WeatherWidgetEmpty() {
   return (
-    <Card>
-      <CardHeader className="border-b pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold font-heading">
-          <Sun className="h-5 w-5 text-amber-400" />
-          5-Day Forecast
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-3">
-        <div className="flex gap-2">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <div
-              key={i}
-              className="flex flex-1 flex-col items-center gap-2 rounded-xl bg-muted/50 px-2 py-3"
-            >
-              <Skeleton className="h-3 w-8" />
-              <Skeleton className="h-6 w-6 rounded-full" />
-              <Skeleton className="h-4 w-6" />
-              <Skeleton className="h-3 w-4" />
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 rounded-xl bg-muted px-4 py-3">
-          <Skeleton className="h-4 w-36" />
-          <Skeleton className="mt-1.5 h-3 w-48" />
-        </div>
-        <p className="mt-3 text-center text-sm text-muted-foreground">
-          Weather data loading...
-        </p>
-      </CardContent>
-    </Card>
+    <Sheet className="p-4">
+      <RuleHead label="Weather" />
+      <p className="mt-3 text-sm text-muted-foreground">
+        No weather data for this field yet. It is added when the field&apos;s
+        location is looked up.
+      </p>
+    </Sheet>
   );
 }

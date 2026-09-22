@@ -1,85 +1,76 @@
-import { TrendingUp, TrendingDown, Minus, Info } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { LedgerRow, RuleHead, Sheet } from "@/components/shared/record";
+import { DEFAULT_YIELD_UNIT, type YieldUnit } from "@/lib/crops";
+import { formatNumber, pluralize } from "@/lib/format";
+import { toneTextClasses, type Tone } from "@/lib/status-styles";
 import type { APHResult } from "@/lib/api/types";
 
 interface YieldSummaryCardProps {
   aph: APHResult;
   fieldName: string;
+  /**
+   * Unit to print beside the average. Display only — the API returns one
+   * number with no unit — so callers pass the unit of the field's crop.
+   */
+  yieldUnit?: YieldUnit;
 }
 
-export function YieldSummaryCard({ aph, fieldName }: YieldSummaryCardProps) {
-  const TrendIcon =
-    aph.trend_direction === "up"
-      ? TrendingUp
-      : aph.trend_direction === "down"
-        ? TrendingDown
-        : Minus;
+const TREND: Record<APHResult["trend_direction"], { tone: Tone; sign: string }> = {
+  up: { tone: "success", sign: "+" },
+  down: { tone: "destructive", sign: "-" },
+  flat: { tone: "neutral", sign: "" },
+};
 
-  const trendColor =
-    aph.trend_direction === "up"
-      ? "text-green-600"
-      : aph.trend_direction === "down"
-        ? "text-red-600"
-        : "text-muted-foreground";
+/**
+ * The field's Actual Production History: the one figure crop insurance is
+ * written against, set large with its unit and named in full.
+ */
+export function YieldSummaryCard({
+  aph,
+  fieldName,
+  yieldUnit = DEFAULT_YIELD_UNIT,
+}: YieldSummaryCardProps) {
+  const trend = TREND[aph.trend_direction];
+  const trendClasses = toneTextClasses[trend.tone];
+  const pct = formatNumber(Math.abs(aph.trend_pct));
+  const years = `${aph.years_used} ${pluralize(aph.years_used, "year")}`;
 
   const trendLabel =
     aph.trend_direction === "up"
-      ? `Up ${aph.trend_pct}% over ${aph.years_used} years`
+      ? `Up ${pct}% over ${years}`
       : aph.trend_direction === "down"
-        ? `Down ${Math.abs(aph.trend_pct)}% over ${aph.years_used} years`
-        : "Stable over last 5 years";
+        ? `Down ${pct}% over ${years}`
+        : `Stable over ${years}`;
 
   return (
-    <Card>
-      <CardHeader className="border-b">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base font-semibold">
-            APH Summary — {fieldName}
-          </CardTitle>
-          <TrendIcon
-            className={cn("h-5 w-5", trendColor)}
-            aria-label={trendLabel}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Actual Production History for crop insurance
-        </p>
-      </CardHeader>
+    <Sheet className="p-4 sm:p-5">
+      <RuleHead label={`APH — ${fieldName}`} />
 
-      <CardContent className="pt-4">
-        <div className="grid grid-cols-3 gap-4">
-          <div className="text-center">
-            <p className="text-3xl font-bold text-foreground">
-              {aph.average_yield_bu_ac}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">avg bu/acre</p>
-          </div>
-          <div className="text-center border-x border-border">
-            <p className="text-3xl font-bold text-foreground">{aph.years_used}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">years used</p>
-          </div>
-          <div className="text-center">
-            <p className={cn("text-3xl font-bold", trendColor)}>
-              {aph.trend_direction === "up"
-                ? `+${aph.trend_pct}%`
-                : aph.trend_direction === "down"
-                  ? `-${Math.abs(aph.trend_pct)}%`
-                  : "—"}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">trend</p>
-          </div>
-        </div>
+      <p className="mt-4 font-mono text-[1.75rem] leading-none font-medium tabular-nums text-foreground">
+        {formatNumber(aph.average_yield_bu_ac)}
+        <span className="ml-1.5 text-base text-muted-foreground">{yieldUnit}</span>
+      </p>
+      <p className="mt-1.5 text-sm text-muted-foreground">
+        Actual Production History — the average yield per acre your crop
+        insurance coverage is written against.
+      </p>
 
-        <div className="mt-4 flex items-start gap-2 rounded-lg bg-muted/40 px-3 py-3">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Your APH is the average yield per acre calculated from your actual harvest
-            records. Your crop insurance coverage is based on this number — a higher
-            APH means more coverage per acre if you have a bad year.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+      <div className="mt-4 divide-y divide-border border-t border-border">
+        <LedgerRow label="Harvest years used" value={`${aph.years_used} yr`} />
+        <LedgerRow
+          label="Trend"
+          value={
+            <span className={trendClasses}>
+              {aph.trend_direction === "flat" ? "Stable" : `${trend.sign}${pct}%`}
+            </span>
+          }
+          note={trendLabel}
+        />
+      </div>
+
+      <p className="reading mt-4 max-w-[62ch] text-muted-foreground">
+        A higher APH means a higher guarantee per acre, so a bad year pays out
+        more. Every harvest you log here goes into the calculation.
+      </p>
+    </Sheet>
   );
 }

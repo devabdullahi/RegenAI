@@ -1,6 +1,7 @@
 "use client";
 
-import { useForm } from "react-hook-form";
+import { useEffect } from "react";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
@@ -18,102 +19,81 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { OnboardingProgress } from "@/components/shared/onboarding-progress";
+import {
+  ONBOARDING_STORAGE_KEYS,
+  STATE_FIPS_PREFIX,
+  US_STATES,
+} from "@/lib/onboarding";
+import { safeGetJSON, safeSetJSON } from "@/lib/storage";
 
 // ---- Validation schema ----
-const farmSchema = z.object({
-  name: z.string().min(1, "Farm name is required"),
-  state: z.string().min(1, "Please select your state"),
-  county: z.string().min(1, "County is required"),
-  total_acres: z
-    .number({ error: "Enter a valid number of acres" })
-    .positive("Acres must be greater than 0"),
-});
+const farmSchema = z
+  .object({
+    name: z.string().trim().min(1, "Farm name is required").max(200, "Keep the farm name under 200 characters"),
+    state: z.string().min(1, "Please select your state or territory"),
+    county: z.string().trim().min(1, "County is required"),
+    county_fips: z
+      .string()
+      .trim()
+      .regex(/^\d{5}$/, "Enter your 5-digit county code (numbers only)"),
+    total_acres: z
+      .number({ error: "Enter a valid number of acres" })
+      .positive("Acres must be greater than 0"),
+  })
+  .refine(
+    (d) => !d.state || !STATE_FIPS_PREFIX[d.state] || d.county_fips.startsWith(STATE_FIPS_PREFIX[d.state]!),
+    {
+      message:
+        "That county code doesn't match the state you picked. Double-check both.",
+      path: ["county_fips"],
+    }
+  );
 
 type FarmFormValues = z.infer<typeof farmSchema>;
 
-// ---- Full list of US states ----
-const US_STATES = [
-  ["AL", "Alabama"],
-  ["AK", "Alaska"],
-  ["AZ", "Arizona"],
-  ["AR", "Arkansas"],
-  ["CA", "California"],
-  ["CO", "Colorado"],
-  ["CT", "Connecticut"],
-  ["DE", "Delaware"],
-  ["FL", "Florida"],
-  ["GA", "Georgia"],
-  ["HI", "Hawaii"],
-  ["ID", "Idaho"],
-  ["IL", "Illinois"],
-  ["IN", "Indiana"],
-  ["IA", "Iowa"],
-  ["KS", "Kansas"],
-  ["KY", "Kentucky"],
-  ["LA", "Louisiana"],
-  ["ME", "Maine"],
-  ["MD", "Maryland"],
-  ["MA", "Massachusetts"],
-  ["MI", "Michigan"],
-  ["MN", "Minnesota"],
-  ["MS", "Mississippi"],
-  ["MO", "Missouri"],
-  ["MT", "Montana"],
-  ["NE", "Nebraska"],
-  ["NV", "Nevada"],
-  ["NH", "New Hampshire"],
-  ["NJ", "New Jersey"],
-  ["NM", "New Mexico"],
-  ["NY", "New York"],
-  ["NC", "North Carolina"],
-  ["ND", "North Dakota"],
-  ["OH", "Ohio"],
-  ["OK", "Oklahoma"],
-  ["OR", "Oregon"],
-  ["PA", "Pennsylvania"],
-  ["RI", "Rhode Island"],
-  ["SC", "South Carolina"],
-  ["SD", "South Dakota"],
-  ["TN", "Tennessee"],
-  ["TX", "Texas"],
-  ["UT", "Utah"],
-  ["VT", "Vermont"],
-  ["VA", "Virginia"],
-  ["WA", "Washington"],
-  ["WV", "West Virginia"],
-  ["WI", "Wisconsin"],
-  ["WY", "Wyoming"],
-] as const;
-
 export default function FarmBasicsPage() {
   const router = useRouter();
-
-  // Pre-populate from localStorage if the user went back
-  const saved =
-    typeof window !== "undefined"
-      ? JSON.parse(localStorage.getItem("onboarding_farm") ?? "null")
-      : null;
 
   const {
     register,
     handleSubmit,
     setValue,
-    watch,
+    reset,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<FarmFormValues>({
     resolver: zodResolver(farmSchema),
     defaultValues: {
-      name: saved?.name ?? "",
-      state: saved?.state ?? "",
-      county: saved?.county ?? "",
-      total_acres: saved?.total_acres ?? undefined,
+      name: "",
+      state: "",
+      county: "",
+      county_fips: "",
+      total_acres: undefined,
     },
   });
 
-  const selectedState = watch("state");
+  // Pre-populate if the user came back to this step. Read storage in an effect,
+  // not during render, so server and client markup match.
+  useEffect(() => {
+    const saved = safeGetJSON<Partial<FarmFormValues> | null>(
+      ONBOARDING_STORAGE_KEYS.farm,
+      null
+    );
+    if (!saved || typeof saved !== "object") return;
+    reset({
+      name: saved.name ?? "",
+      state: saved.state ?? "",
+      county: saved.county ?? "",
+      county_fips: saved.county_fips ?? "",
+      total_acres: saved.total_acres ?? undefined,
+    });
+  }, [reset]);
+
+  const selectedState = useWatch({ control, name: "state" });
+  const countyName = useWatch({ control, name: "county" });
 
   function onSubmit(data: FarmFormValues) {
-    localStorage.setItem("onboarding_farm", JSON.stringify(data));
+    safeSetJSON(ONBOARDING_STORAGE_KEYS.farm, data);
     router.push("/onboarding/fields");
   }
 
@@ -121,7 +101,7 @@ export default function FarmBasicsPage() {
     <div className="flex flex-col gap-6">
       <OnboardingProgress currentStep={2} />
 
-      <div>
+      <div className="border-b-2 border-rule-strong pb-4">
         <h1 className="font-heading text-2xl font-bold">Tell us about your farm</h1>
         <p className="mt-1 text-base text-muted-foreground">
           Just the basics — you can always update these later.
@@ -135,7 +115,7 @@ export default function FarmBasicsPage() {
       >
         {/* Farm name */}
         <div className="flex flex-col gap-2">
-          <Label htmlFor="name" className="text-base font-medium">
+          <Label htmlFor="name">
             Farm name
           </Label>
           <Input
@@ -145,7 +125,7 @@ export default function FarmBasicsPage() {
             autoComplete="organization"
             aria-describedby={errors.name ? "name-error" : undefined}
             aria-invalid={!!errors.name}
-            className="h-12 text-base px-4"
+           
             {...register("name")}
           />
           {errors.name && (
@@ -157,8 +137,8 @@ export default function FarmBasicsPage() {
 
         {/* State */}
         <div className="flex flex-col gap-2">
-          <Label htmlFor="state-trigger" className="text-base font-medium">
-            State
+          <Label htmlFor="state-trigger">
+            State or territory
           </Label>
           <Select
             value={selectedState}
@@ -172,11 +152,11 @@ export default function FarmBasicsPage() {
               aria-invalid={!!errors.state}
               className="h-12 w-full text-base px-4"
             >
-              <SelectValue placeholder="Select your state" />
+              <SelectValue placeholder="Select your state or territory" />
             </SelectTrigger>
             <SelectContent>
-              {US_STATES.map(([abbr, name]) => (
-                <SelectItem key={abbr} value={abbr} className="text-base py-3">
+              {US_STATES.map(({ code, name }) => (
+                <SelectItem key={code} value={code} className="text-base py-3">
                   {name}
                 </SelectItem>
               ))}
@@ -191,7 +171,7 @@ export default function FarmBasicsPage() {
 
         {/* County */}
         <div className="flex flex-col gap-2">
-          <Label htmlFor="county" className="text-base font-medium">
+          <Label htmlFor="county">
             County
           </Label>
           <Input
@@ -200,7 +180,7 @@ export default function FarmBasicsPage() {
             placeholder="e.g. Story County"
             aria-describedby={errors.county ? "county-error" : undefined}
             aria-invalid={!!errors.county}
-            className="h-12 text-base px-4"
+           
             {...register("county")}
           />
           {errors.county && (
@@ -210,20 +190,57 @@ export default function FarmBasicsPage() {
           )}
         </div>
 
+        {/* County FIPS code */}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="county_fips">
+            County code
+          </Label>
+          <Input
+            id="county_fips"
+            className="font-mono"
+            type="text"
+            placeholder={
+              selectedState && STATE_FIPS_PREFIX[selectedState]
+                ? `e.g. ${STATE_FIPS_PREFIX[selectedState]}169`
+                : "5 digits, e.g. 19169"
+            }
+            inputMode="numeric"
+            maxLength={5}
+            autoComplete="off"
+            aria-describedby={
+              errors.county_fips ? "county-fips-help county-fips-error" : "county-fips-help"
+            }
+            aria-invalid={!!errors.county_fips}
+           
+            {...register("county_fips")}
+          />
+          <p id="county-fips-help" className="text-sm text-muted-foreground">
+            The 5-digit FIPS number for your county. It helps us find your local
+            soil and weather. Your county Farm Service Agency office or a quick
+            search for &quot;{countyName || "your county"} FIPS code&quot; will have it.
+          </p>
+          {errors.county_fips && (
+            <p id="county-fips-error" role="alert" className="text-sm text-destructive">
+              {errors.county_fips.message}
+            </p>
+          )}
+        </div>
+
         {/* Total acres */}
         <div className="flex flex-col gap-2">
-          <Label htmlFor="total_acres" className="text-base font-medium">
+          <Label htmlFor="total_acres">
             Total acres
           </Label>
           <Input
             id="total_acres"
+            className="font-mono"
             type="number"
             placeholder="e.g. 480"
             inputMode="decimal"
             min={0}
             aria-describedby={errors.total_acres ? "acres-error" : undefined}
             aria-invalid={!!errors.total_acres}
-            className="h-12 text-base px-4"
+           
             {...register("total_acres", { valueAsNumber: true })}
           />
           {errors.total_acres && (
@@ -238,7 +255,8 @@ export default function FarmBasicsPage() {
           <Button
             type="submit"
             disabled={isSubmitting}
-            className="h-12 w-full bg-accent text-accent-foreground hover:bg-accent/90 text-base font-semibold cursor-pointer"
+            size="lg"
+          className="w-full cursor-pointer"
           >
             Next: Add Your Fields
           </Button>

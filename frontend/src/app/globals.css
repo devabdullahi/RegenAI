@@ -7,9 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-body);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-heading);
+  --font-sans: var(--font-ui);
+  --font-heading: var(--font-ui);
+  --font-serif: var(--font-reading);
+  --font-mono: var(--font-data);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -39,124 +40,146 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  --radius-sm: 1px;
+  --radius-md: 2px;
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
-  /* RegenAI custom colors */
+  --radius-xl: 3px;
+  --radius-2xl: 3px;
+  --radius-3xl: 4px;
+  --radius-4xl: 4px;
+  /* RegenAI semantic colors */
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
   --color-soil: var(--soil);
   --color-soil-foreground: var(--soil-foreground);
   --color-weather: var(--weather);
   --color-weather-foreground: var(--weather-foreground);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
 }
 
-/* ============================================
-   RegenAI Design System — Agriculture/Farm Tech
-   Primary: Earth Green #15803D
-   Accent: Harvest Gold #A16207
-   Typography: Lexend (headings) + Source Sans 3 (body)
-   ============================================ */
+/* ============================================================
+   RegenAI — "Field record"
+
+   This app replaces paperwork: NRCS conservation plan sheets,
+   extension bulletins, elevator scale tickets, seed tags. The
+   interface borrows their conventions — manila stock, hairline
+   rules, small-caps section heads, stamped practice codes, and
+   figures set in monospace so columns of acres and bushels line
+   up.
+
+   Rules of the house:
+     - No shadows, no gradients, no translucent panels. Separation
+       is a hairline rule or a change of paper tint.
+     - Corners are 2px. Paper is cut, not rounded.
+     - Every figure is mono and tabular, and carries its unit
+       (ac, bu/ac, $/ac, pts).
+     - Color is structural: green marks the farm's own record,
+       red-orange marks something with a deadline.
+   ============================================================ */
 
 :root {
-  /* Core palette — earth green + harvest gold */
-  --background: oklch(0.986 0.015 152);       /* #F0FDF4 — light green tint */
-  --foreground: oklch(0.365 0.095 152);       /* #14532D — dark green text */
-  --card: oklch(1 0 0);                        /* #FFFFFF */
-  --card-foreground: oklch(0.365 0.095 152);  /* #14532D */
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.365 0.095 152);
-  --primary: oklch(0.527 0.135 152.5);        /* #15803D — earth green */
-  --primary-foreground: oklch(1 0 0);          /* #FFFFFF */
-  --secondary: oklch(0.723 0.191 149.6);      /* #22C55E — bright green */
-  --secondary-foreground: oklch(0.145 0.02 265); /* #0F172A */
-  --muted: oklch(0.949 0.008 200);            /* #E8F0F1 */
-  --muted-foreground: oklch(0.554 0.03 256);  /* #64748B */
-  --accent: oklch(0.504 0.128 72);            /* #A16207 — harvest gold */
-  --accent-foreground: oklch(1 0 0);           /* #FFFFFF */
-  --destructive: oklch(0.577 0.245 27.3);     /* #DC2626 */
-  --border: oklch(0.928 0.08 155);            /* #BBF7D0 — soft green border */
-  --input: oklch(0.928 0.08 155);
-  --ring: oklch(0.527 0.135 152.5);           /* matches primary */
-  /* Semantic colors */
-  --success: oklch(0.527 0.135 152.5);        /* same as primary */
-  --success-foreground: oklch(1 0 0);
-  --warning: oklch(0.75 0.18 55);             /* true amber — distinct from harvest gold accent */
-  --warning-foreground: oklch(0.145 0.02 265);
-  /* RegenAI extended semantic tokens */
-  --soil: oklch(0.52 0.02 60);               /* warm brown — secondary text, borders (#78716C / stone-500) */
-  --soil-foreground: oklch(1 0 0);
-  --weather: oklch(0.648 0.164 232);          /* sky blue — weather/water data (#0EA5E9) */
-  --weather-foreground: oklch(1 0 0);
-  /* Field mode tokens — high-contrast for outdoor use */
-  --field-mode-bg: #1A1A1A;
-  --field-mode-fg: #FFFDE7;
-  /* Chart colors — agriculture themed */
-  --chart-1: oklch(0.527 0.135 152.5);        /* earth green */
-  --chart-2: oklch(0.504 0.128 72);           /* harvest gold */
-  --chart-3: oklch(0.723 0.191 149.6);        /* bright green */
-  --chart-4: oklch(0.554 0.03 256);           /* slate */
-  --chart-5: oklch(0.365 0.095 152);          /* dark green */
-  --radius: 0.75rem;                           /* 12px base radius */
-  /* Sidebar */
-  --sidebar: oklch(1 0 0);
-  --sidebar-foreground: oklch(0.365 0.095 152);
-  --sidebar-primary: oklch(0.527 0.135 152.5);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.986 0.015 152);
-  --sidebar-accent-foreground: oklch(0.365 0.095 152);
-  --sidebar-border: oklch(0.928 0.08 155);
-  --sidebar-ring: oklch(0.527 0.135 152.5);
+  /* Paper and ink */
+  --background: oklch(0.945 0.017 85);        /* #F2EDE1 manila stock */
+  --foreground: oklch(0.216 0.012 135);       /* #191C17 ink */
+  --card: oklch(0.977 0.011 88);              /* #FCFAF4 record sheet */
+  --card-foreground: oklch(0.216 0.012 135);
+  --popover: oklch(0.977 0.011 88);
+  --popover-foreground: oklch(0.216 0.012 135);
+  /* Field green — the farm's own record */
+  --primary: oklch(0.424 0.077 148);          /* #2E5E32 */
+  --primary-foreground: oklch(0.977 0.011 88);
+  --secondary: oklch(0.898 0.022 92);         /* #E4DDCA tinted stock */
+  --secondary-foreground: oklch(0.216 0.012 135);
+  --muted: oklch(0.912 0.019 90);             /* #E8E2D2 */
+  --muted-foreground: oklch(0.455 0.014 120); /* #5A5F52 pencil */
+  /* Implement red-orange — attention, deadlines */
+  --accent: oklch(0.505 0.152 38);            /* #B4441F */
+  --accent-foreground: oklch(0.977 0.011 88);
+  --destructive: oklch(0.432 0.143 32);       /* #9B2C17 barn red */
+  --border: oklch(0.836 0.023 89);            /* #CFC7B3 rule */
+  --input: oklch(0.836 0.023 89);
+  --ring: oklch(0.424 0.077 148);
+  /* Hairlines: --rule for ordinary dividers, --rule-strong for section heads */
+  --rule: oklch(0.836 0.023 89);
+  --rule-strong: oklch(0.216 0.012 135);
+  /* Status */
+  --success: oklch(0.468 0.088 147);          /* #3A6B3A */
+  --success-foreground: oklch(0.977 0.011 88);
+  --warning: oklch(0.556 0.104 79);           /* #97701A grain amber */
+  --warning-foreground: oklch(0.977 0.011 88);
+  --info: oklch(0.404 0.063 245);             /* #2C4A6B plat-book blue */
+  --info-foreground: oklch(0.977 0.011 88);
+  --soil: oklch(0.464 0.056 62);              /* #7A5B3A turned earth */
+  --soil-foreground: oklch(0.977 0.011 88);
+  --weather: oklch(0.471 0.048 236);          /* #3A6076 slate */
+  --weather-foreground: oklch(0.977 0.011 88);
+  /* Data ink — printed-chart colors, no neon */
+  --chart-1: oklch(0.424 0.077 148);
+  --chart-2: oklch(0.556 0.104 79);
+  --chart-3: oklch(0.464 0.056 62);
+  --chart-4: oklch(0.471 0.048 236);
+  --chart-5: oklch(0.505 0.152 38);
+  --radius: 2px;
+  --sidebar: oklch(0.977 0.011 88);
+  --sidebar-foreground: oklch(0.216 0.012 135);
+  --sidebar-primary: oklch(0.424 0.077 148);
+  --sidebar-primary-foreground: oklch(0.977 0.011 88);
+  --sidebar-accent: oklch(0.912 0.019 90);
+  --sidebar-accent-foreground: oklch(0.216 0.012 135);
+  --sidebar-border: oklch(0.836 0.023 89);
+  --sidebar-ring: oklch(0.424 0.077 148);
 }
 
+/* Night cab: the same sheet read by dash light. */
 .dark {
-  --background: oklch(0.17 0.02 152);
-  --foreground: oklch(0.95 0.01 152);
-  --card: oklch(0.22 0.02 152);
-  --card-foreground: oklch(0.95 0.01 152);
-  --popover: oklch(0.22 0.02 152);
-  --popover-foreground: oklch(0.95 0.01 152);
-  --primary: oklch(0.723 0.191 149.6);        /* brighter green for dark mode */
-  --primary-foreground: oklch(0.145 0.02 265);
-  --secondary: oklch(0.3 0.04 152);
-  --secondary-foreground: oklch(0.95 0.01 152);
-  --muted: oklch(0.3 0.04 152);
-  --muted-foreground: oklch(0.65 0.02 152);
-  --accent: oklch(0.6 0.128 72);              /* lighter gold for dark mode */
-  --accent-foreground: oklch(0.145 0.02 265);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.723 0.191 149.6);
-  --success: oklch(0.723 0.191 149.6);
-  --success-foreground: oklch(0.145 0.02 265);
-  --warning: oklch(0.75 0.18 55);             /* true amber in dark mode */
-  --warning-foreground: oklch(0.145 0.02 265);
-  --soil: oklch(0.62 0.02 60);               /* warm brown lifted for dark mode */
-  --soil-foreground: oklch(0.145 0.02 265);
-  --weather: oklch(0.72 0.164 232);           /* sky blue lifted for dark mode */
-  --weather-foreground: oklch(0.145 0.02 265);
-  --field-mode-bg: #1A1A1A;
-  --field-mode-fg: #FFFDE7;
-  --chart-1: oklch(0.723 0.191 149.6);
-  --chart-2: oklch(0.6 0.128 72);
-  --chart-3: oklch(0.527 0.135 152.5);
-  --chart-4: oklch(0.65 0.02 152);
-  --chart-5: oklch(0.95 0.01 152);
-  --sidebar: oklch(0.22 0.02 152);
-  --sidebar-foreground: oklch(0.95 0.01 152);
-  --sidebar-primary: oklch(0.723 0.191 149.6);
-  --sidebar-primary-foreground: oklch(0.145 0.02 265);
-  --sidebar-accent: oklch(0.3 0.04 152);
-  --sidebar-accent-foreground: oklch(0.95 0.01 152);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.723 0.191 149.6);
+  --background: oklch(0.183 0.008 110);       /* #16170F */
+  --foreground: oklch(0.912 0.019 92);        /* #E8E3D2 */
+  --card: oklch(0.223 0.009 108);             /* #1F2017 */
+  --card-foreground: oklch(0.912 0.019 92);
+  --popover: oklch(0.223 0.009 108);
+  --popover-foreground: oklch(0.912 0.019 92);
+  --primary: oklch(0.682 0.093 140);          /* #83A874 lifted field green */
+  --primary-foreground: oklch(0.183 0.008 110);
+  --secondary: oklch(0.277 0.011 106);
+  --secondary-foreground: oklch(0.912 0.019 92);
+  --muted: oklch(0.277 0.011 106);
+  --muted-foreground: oklch(0.658 0.015 100); /* #9C9885 */
+  --accent: oklch(0.672 0.134 42);            /* #DE7A4E */
+  --accent-foreground: oklch(0.183 0.008 110);
+  --destructive: oklch(0.618 0.146 32);       /* #C9563A */
+  --border: oklch(0.323 0.012 104);           /* #37382B */
+  --input: oklch(0.323 0.012 104);
+  --ring: oklch(0.682 0.093 140);
+  --rule: oklch(0.323 0.012 104);
+  --rule-strong: oklch(0.912 0.019 92);
+  --success: oklch(0.682 0.093 140);
+  --success-foreground: oklch(0.183 0.008 110);
+  --warning: oklch(0.742 0.109 78);           /* #C89A3E */
+  --warning-foreground: oklch(0.183 0.008 110);
+  --info: oklch(0.672 0.076 240);             /* #71A0C4 */
+  --info-foreground: oklch(0.183 0.008 110);
+  --soil: oklch(0.638 0.066 62);              /* #B08A5E */
+  --soil-foreground: oklch(0.183 0.008 110);
+  --weather: oklch(0.672 0.058 235);
+  --weather-foreground: oklch(0.183 0.008 110);
+  --chart-1: oklch(0.682 0.093 140);
+  --chart-2: oklch(0.742 0.109 78);
+  --chart-3: oklch(0.638 0.066 62);
+  --chart-4: oklch(0.672 0.076 240);
+  --chart-5: oklch(0.672 0.134 42);
+  --sidebar: oklch(0.223 0.009 108);
+  --sidebar-foreground: oklch(0.912 0.019 92);
+  --sidebar-primary: oklch(0.682 0.093 140);
+  --sidebar-primary-foreground: oklch(0.183 0.008 110);
+  --sidebar-accent: oklch(0.277 0.011 106);
+  --sidebar-accent-foreground: oklch(0.912 0.019 92);
+  --sidebar-border: oklch(0.323 0.012 104);
+  --sidebar-ring: oklch(0.682 0.093 140);
 }
 
 @layer base {
@@ -169,17 +192,101 @@
   html {
     @apply font-sans;
   }
-  /* Ensure heading font always renders at bold weight */
+  /* Archivo runs wide; pull headings in so they read as set type, not UI. */
   .font-heading {
-    font-weight: 700;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+  h1.font-heading {
+    letter-spacing: -0.025em;
+  }
+  /* Figures line up in columns whether they sit in a table or a sentence. */
+  .font-mono,
+  table,
+  [data-figure] {
+    font-variant-numeric: tabular-nums;
   }
   /* Farmer-specific: minimum touch targets */
   button, [role="button"], a, input, select, textarea {
-    min-height: 44px;
+    min-height: 48px;
   }
-  /* Ensure 16px minimum font size on mobile (prevents iOS zoom) */
+  /* 16px minimum on mobile inputs (prevents iOS zoom) */
   input, select, textarea {
     font-size: 16px;
+  }
+}
+
+@layer components {
+  /*
+   * Section head: a small-caps label sitting on a hairline that runs to the
+   * end of the measure, the way a printed form divides its parts.
+   */
+  .rule-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-family: var(--font-data), ui-monospace, monospace;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+  /*
+   * Ledger row: label, dotted leader, figure — a scale ticket. The leader is
+   * a repeating dot pattern, so it stretches to whatever space is left.
+   */
+  .ledger-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding-block: 0.5rem;
+  }
+  .ledger-row > :first-child {
+    flex: 0 1 auto;
+  }
+  .ledger-row::after {
+    content: "";
+    order: 1;
+    flex: 1 1 auto;
+    min-width: 1.5rem;
+    align-self: flex-end;
+    margin-bottom: 0.28em;
+    height: 3px;
+    background-image: radial-gradient(circle at 1.5px 50%, var(--rule) 1.2px, transparent 1.3px);
+    background-size: 6px 3px;
+    background-repeat: repeat-x;
+  }
+  .ledger-row > :last-child {
+    order: 2;
+    flex: 0 0 auto;
+    font-family: var(--font-data), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * Stamp: a program code as it appears on a plan sheet — boxed and spaced,
+   * never a rounded pill.
+   */
+  .stamp {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border: 1px solid currentColor;
+    padding: 0.0625rem 0.3125rem;
+    font-family: var(--font-data), ui-monospace, monospace;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  /* Reading matter: program rules explained, set like a bulletin. */
+  .reading {
+    font-family: var(--font-reading), Georgia, serif;
+    font-size: 1.0625rem;
+    line-height: 1.6;
   }
 }
 

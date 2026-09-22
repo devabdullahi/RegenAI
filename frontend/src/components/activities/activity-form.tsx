@@ -1,739 +1,119 @@
 "use client";
 
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { toast } from "sonner";
-import { useRouter } from "next/navigation";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { ActivityTypePicker } from "./activity-type-picker";
-import { RestrictedUseBadge } from "./restricted-use-badge";
 import { useState } from "react";
-import type { ActivityType, Field } from "@/lib/api/types";
+import { useForm, useWatch } from "react-hook-form";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { ActivityTypePicker } from "./activity-type-picker";
+import { CommonFields } from "./form/common-fields";
+import { CoverCropFields } from "./form/cover-crop-fields";
+import { FertilizeFields } from "./form/fertilize-fields";
+import {
+  FormField,
+  describedBy,
+  fieldError,
+  selectClasses,
+  type ActivityFormApi,
+} from "./form/form-field";
+import { HarvestFields } from "./form/harvest-fields";
+import { PlantFields } from "./form/plant-fields";
+import {
+  activityFormDefaults,
+  activityFormResolver,
+  todayLocalIso,
+  type ActivityFormValues,
+} from "./form/schemas";
+import { ScoutFields } from "./form/scout-fields";
+import { SprayFields } from "./form/spray-fields";
+import { TillageFields } from "./form/tillage-fields";
+import { EdgeNote, RuleHead } from "@/components/shared/record";
+import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api/client";
+import { buildActivityCreatePayload } from "@/lib/api/adapters";
+import { formatAcres } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import type { ActivityRecord, ActivityType, Field } from "@/lib/api/types";
 
-// ── Zod schemas per activity type ─────────────────────────────────────────────
-
-const commonSchema = z.object({
-  field_id: z.string().min(1, "Select a field"),
-  activity_date: z.string().min(1, "Date is required"),
-  acres: z.coerce.number().positive("Acres must be greater than 0"),
-  operator: z.string().min(1, "Operator name is required"),
-  equipment: z.string().optional(),
-  cost_per_acre: z.coerce.number().nonnegative().optional(),
-  notes: z.string().optional(),
-});
-
-const plantSchema = commonSchema.extend({
-  activity_type: z.literal("plant"),
-  variety: z.string().min(1, "Variety is required"),
-  seeding_rate_kac: z.coerce.number().positive("Seeding rate required"),
-  row_spacing_in: z.coerce.number().positive("Row spacing required"),
-  depth_in: z.coerce.number().positive("Depth required"),
-});
-
-const spraySchema = commonSchema.extend({
-  activity_type: z.literal("spray"),
-  product_name: z.string().min(1, "Product name is required"),
-  epa_reg_number: z.string().min(1, "EPA registration number required"),
-  rate_oz_ac: z.coerce.number().positive("Rate required"),
-  target_pest: z.string().min(1, "Target pest required"),
-  wind_mph: z.coerce.number().nonnegative("Wind speed required"),
-  temp_f: z.coerce.number("Temperature required"),
-  restricted_use: z.boolean(),
-  applicator_name: z.string().optional(),
-  applicator_cert_number: z.string().optional(),
-}).refine(
-  (data) => {
-    if (data.restricted_use) {
-      return !!data.applicator_name && !!data.applicator_cert_number;
-    }
-    return true;
-  },
-  { message: "Applicator info required for restricted-use products", path: ["applicator_name"] }
-);
-
-const fertilizeSchema = commonSchema.extend({
-  activity_type: z.literal("fertilize"),
-  product_name: z.string().min(1, "Product name is required"),
-  n_lbs_ac: z.coerce.number().nonnegative("Nitrogen rate required"),
-  p_lbs_ac: z.coerce.number().nonnegative("Phosphorus rate required"),
-  k_lbs_ac: z.coerce.number().nonnegative("Potassium rate required"),
-  method: z.enum(["broadcast", "sidedress", "inject", "foliar"]),
-});
-
-const scoutSchema = commonSchema.extend({
-  activity_type: z.literal("scout"),
-  pest_type: z.enum(["insect", "disease", "weed", "other"]),
-  pest_name: z.string().min(1, "Pest or problem name required"),
-  severity: z.enum(["none", "low", "moderate", "high", "critical"]),
-  threshold_exceeded: z.boolean(),
-  action_taken: z.string().optional(),
-});
-
-const harvestSchema = commonSchema.extend({
-  activity_type: z.literal("harvest"),
-  yield_bu_ac: z.coerce.number().positive("Yield required"),
-  moisture_pct: z.coerce.number().positive("Moisture required"),
-  test_weight_lbs_bu: z.coerce.number().positive("Test weight required"),
-  elevator_ticket: z.string().optional(),
-});
-
-// Union — we validate per-type at submission
-type PlantFormValues = z.infer<typeof plantSchema>;
-type SprayFormValues = z.infer<typeof spraySchema>;
-type FertilizeFormValues = z.infer<typeof fertilizeSchema>;
-type ScoutFormValues = z.infer<typeof scoutSchema>;
-type HarvestFormValues = z.infer<typeof harvestSchema>;
-
-type AnyFormValues =
-  | PlantFormValues
-  | SprayFormValues
-  | FertilizeFormValues
-  | ScoutFormValues
-  | HarvestFormValues;
-
-// ── Shared form field wrapper ──────────────────────────────────────────────────
-
-function FormField({
-  label,
-  htmlFor,
-  error,
-  required,
-  hint,
-  children,
+function TypeSpecificFields({
+  type,
+  form,
+  cropType,
 }: {
-  label: string;
-  htmlFor: string;
-  error?: string;
-  required?: boolean;
-  hint?: string;
-  children: React.ReactNode;
+  type: ActivityType;
+  form: ActivityFormApi;
+  /** Crop of the selected field, so harvest asks for the right yield unit. */
+  cropType?: string;
 }) {
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={htmlFor} className="text-base font-medium text-foreground">
-        {label}
-        {required && (
-          <span className="ml-1 text-red-500" aria-hidden="true">
-            *
-          </span>
-        )}
-      </Label>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-      {children}
-      {error && (
-        <p className="text-sm text-red-600" role="alert">
-          {error}
+  switch (type) {
+    case "plant":
+      return <PlantFields form={form} />;
+    case "spray":
+      return <SprayFields form={form} />;
+    case "fertilize":
+      return <FertilizeFields form={form} />;
+    case "scout":
+      return <ScoutFields form={form} />;
+    case "harvest":
+      return <HarvestFields form={form} cropType={cropType} />;
+    case "tillage":
+      return <TillageFields form={form} />;
+    case "cover_crop":
+      return <CoverCropFields form={form} />;
+    case "other":
+      return (
+        <p className="text-sm text-muted-foreground">
+          Describe what you did in the box below.
         </p>
-      )}
-    </div>
-  );
+      );
+  }
 }
-
-// ── Type-specific form sections ────────────────────────────────────────────────
-
-function PlantFields({
-  register,
-  errors,
-}: {
-  register: ReturnType<typeof useForm>["register"];
-  errors: Record<string, { message?: string } | undefined>;
-}) {
-  return (
-    <>
-      <FormField label="Seed Variety" htmlFor="variety" required error={errors.variety?.message}>
-        <Input
-          id="variety"
-          placeholder="e.g. DeKalb DKC52-70RIB"
-          className="h-12 text-base"
-          {...register("variety")}
-        />
-      </FormField>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <FormField
-          label="Seeding Rate (K/ac)"
-          htmlFor="seeding_rate_kac"
-          required
-          hint="Thousands of seeds per acre"
-          error={errors.seeding_rate_kac?.message}
-        >
-          <Input
-            id="seeding_rate_kac"
-            type="number"
-            step="0.1"
-            placeholder="34.5"
-            className="h-12 text-base"
-            {...register("seeding_rate_kac")}
-          />
-        </FormField>
-        <FormField
-          label='Row Spacing (inches)'
-          htmlFor="row_spacing_in"
-          required
-          error={errors.row_spacing_in?.message}
-        >
-          <Input
-            id="row_spacing_in"
-            type="number"
-            placeholder="30"
-            className="h-12 text-base"
-            {...register("row_spacing_in")}
-          />
-        </FormField>
-        <FormField
-          label="Planting Depth (inches)"
-          htmlFor="depth_in"
-          required
-          error={errors.depth_in?.message}
-        >
-          <Input
-            id="depth_in"
-            type="number"
-            step="0.25"
-            placeholder="2.0"
-            className="h-12 text-base"
-            {...register("depth_in")}
-          />
-        </FormField>
-      </div>
-    </>
-  );
-}
-
-function SprayFields({
-  register,
-  watch,
-  setValue,
-  errors,
-}: {
-  register: ReturnType<typeof useForm>["register"];
-  watch: ReturnType<typeof useForm>["watch"];
-  setValue: ReturnType<typeof useForm>["setValue"];
-  errors: Record<string, { message?: string } | undefined>;
-}) {
-  const restrictedUse = watch("restricted_use") as boolean;
-
-  return (
-    <>
-      <FormField
-        label="Product Name"
-        htmlFor="product_name"
-        required
-        error={errors.product_name?.message}
-      >
-        <Input
-          id="product_name"
-          placeholder="e.g. Roundup PowerMAX"
-          className="h-12 text-base"
-          {...register("product_name")}
-        />
-      </FormField>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <FormField
-          label="EPA Registration Number"
-          htmlFor="epa_reg_number"
-          required
-          hint="Found on the product label"
-          error={errors.epa_reg_number?.message}
-        >
-          <Input
-            id="epa_reg_number"
-            placeholder="e.g. 524-549"
-            className="h-12 text-base"
-            {...register("epa_reg_number")}
-          />
-        </FormField>
-        <FormField
-          label="Application Rate (oz/ac)"
-          htmlFor="rate_oz_ac"
-          required
-          error={errors.rate_oz_ac?.message}
-        >
-          <Input
-            id="rate_oz_ac"
-            type="number"
-            step="0.01"
-            placeholder="32"
-            className="h-12 text-base"
-            {...register("rate_oz_ac")}
-          />
-        </FormField>
-      </div>
-      <FormField
-        label="Target Pest or Problem"
-        htmlFor="target_pest"
-        required
-        error={errors.target_pest?.message}
-      >
-        <Input
-          id="target_pest"
-          placeholder="e.g. Waterhemp, Soybean Aphid"
-          className="h-12 text-base"
-          {...register("target_pest")}
-        />
-      </FormField>
-      <div className="grid grid-cols-2 gap-4">
-        <FormField
-          label="Wind Speed (mph)"
-          htmlFor="wind_mph"
-          required
-          error={errors.wind_mph?.message}
-        >
-          <Input
-            id="wind_mph"
-            type="number"
-            step="0.5"
-            placeholder="7"
-            className="h-12 text-base"
-            {...register("wind_mph")}
-          />
-        </FormField>
-        <FormField
-          label="Temperature (°F)"
-          htmlFor="temp_f"
-          required
-          error={errors.temp_f?.message}
-        >
-          <Input
-            id="temp_f"
-            type="number"
-            placeholder="72"
-            className="h-12 text-base"
-            {...register("temp_f")}
-          />
-        </FormField>
-      </div>
-
-      {/* Restricted use toggle */}
-      <div className="rounded-xl border-2 border-border bg-card px-4 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex-1">
-            <p className="text-base font-semibold text-foreground">
-              Restricted use pesticide?
-            </p>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Check the label — restricted use products require a certified applicator.
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={restrictedUse}
-            onClick={() => setValue("restricted_use", !restrictedUse, { shouldValidate: true })}
-            className={cn(
-              "relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              restrictedUse ? "bg-red-500" : "bg-muted"
-            )}
-          >
-            <span
-              className={cn(
-                "pointer-events-none inline-block h-6 w-6 rounded-full bg-white shadow transition-transform",
-                restrictedUse ? "translate-x-7" : "translate-x-0"
-              )}
-            />
-            <span className="sr-only">{restrictedUse ? "Yes, restricted use" : "No, not restricted use"}</span>
-          </button>
-        </div>
-
-        {restrictedUse && (
-          <div className="mt-4 space-y-4 border-t border-border pt-4">
-            <div className="flex items-center gap-2">
-              <RestrictedUseBadge />
-              <p className="text-sm text-muted-foreground">
-                Applicator info is required for this record.
-              </p>
-            </div>
-            <FormField
-              label="Applicator Name"
-              htmlFor="applicator_name"
-              required
-              error={errors.applicator_name?.message}
-            >
-              <Input
-                id="applicator_name"
-                placeholder="Full name of certified applicator"
-                className="h-12 text-base"
-                {...register("applicator_name")}
-              />
-            </FormField>
-            <FormField
-              label="Applicator Certification Number"
-              htmlFor="applicator_cert_number"
-              required
-              error={errors.applicator_cert_number?.message}
-            >
-              <Input
-                id="applicator_cert_number"
-                placeholder="e.g. IA-LIC-44821"
-                className="h-12 text-base"
-                {...register("applicator_cert_number")}
-              />
-            </FormField>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
-function FertilizeFields({
-  register,
-  errors,
-}: {
-  register: ReturnType<typeof useForm>["register"];
-  errors: Record<string, { message?: string } | undefined>;
-}) {
-  return (
-    <>
-      <FormField
-        label="Product Name"
-        htmlFor="product_name"
-        required
-        error={errors.product_name?.message}
-      >
-        <Input
-          id="product_name"
-          placeholder="e.g. UAN 32% Solution"
-          className="h-12 text-base"
-          {...register("product_name")}
-        />
-      </FormField>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <FormField
-          label="Nitrogen — N (lbs/ac)"
-          htmlFor="n_lbs_ac"
-          required
-          error={errors.n_lbs_ac?.message}
-        >
-          <Input
-            id="n_lbs_ac"
-            type="number"
-            placeholder="80"
-            className="h-12 text-base"
-            {...register("n_lbs_ac")}
-          />
-        </FormField>
-        <FormField
-          label="Phosphorus — P (lbs/ac)"
-          htmlFor="p_lbs_ac"
-          required
-          error={errors.p_lbs_ac?.message}
-        >
-          <Input
-            id="p_lbs_ac"
-            type="number"
-            placeholder="40"
-            className="h-12 text-base"
-            {...register("p_lbs_ac")}
-          />
-        </FormField>
-        <FormField
-          label="Potassium — K (lbs/ac)"
-          htmlFor="k_lbs_ac"
-          required
-          error={errors.k_lbs_ac?.message}
-        >
-          <Input
-            id="k_lbs_ac"
-            type="number"
-            placeholder="60"
-            className="h-12 text-base"
-            {...register("k_lbs_ac")}
-          />
-        </FormField>
-      </div>
-      <FormField
-        label="Application Method"
-        htmlFor="method"
-        required
-        error={errors.method?.message}
-      >
-        <select
-          id="method"
-          className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
-          {...register("method")}
-        >
-          <option value="broadcast">Broadcast (spread over field)</option>
-          <option value="sidedress">Sidedress (between rows)</option>
-          <option value="inject">Inject (knife into soil)</option>
-          <option value="foliar">Foliar (sprayed on leaves)</option>
-        </select>
-      </FormField>
-    </>
-  );
-}
-
-function ScoutFields({
-  register,
-  watch,
-  setValue,
-  errors,
-}: {
-  register: ReturnType<typeof useForm>["register"];
-  watch: ReturnType<typeof useForm>["watch"];
-  setValue: ReturnType<typeof useForm>["setValue"];
-  errors: Record<string, { message?: string } | undefined>;
-}) {
-  const thresholdExceeded = watch("threshold_exceeded") as boolean;
-  const severity = watch("severity") as string;
-
-  const SEVERITY_OPTIONS = [
-    { value: "none", label: "None" },
-    { value: "low", label: "Low" },
-    { value: "moderate", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "critical", label: "Critical" },
-  ];
-
-  const SEVERITY_COLORS: Record<string, string> = {
-    none: "bg-muted text-muted-foreground border-border",
-    low: "bg-green-100 text-green-700 border-green-300",
-    moderate: "bg-amber-100 text-amber-700 border-amber-300",
-    high: "bg-red-100 text-red-700 border-red-300",
-    critical: "bg-red-200 text-red-900 border-red-500",
-  };
-
-  return (
-    <>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <FormField
-          label="Type of Problem"
-          htmlFor="pest_type"
-          required
-          error={errors.pest_type?.message}
-        >
-          <select
-            id="pest_type"
-            className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
-            {...register("pest_type")}
-          >
-            <option value="insect">Insect</option>
-            <option value="disease">Disease</option>
-            <option value="weed">Weed</option>
-            <option value="other">Other</option>
-          </select>
-        </FormField>
-        <FormField
-          label="Pest or Problem Name"
-          htmlFor="pest_name"
-          required
-          error={errors.pest_name?.message}
-        >
-          <Input
-            id="pest_name"
-            placeholder="e.g. Soybean Aphid, Gray Leaf Spot"
-            className="h-12 text-base"
-            {...register("pest_name")}
-          />
-        </FormField>
-      </div>
-
-      {/* Severity slider as big buttons */}
-      <div className="space-y-1.5">
-        <p id="severity-label" className="text-base font-medium text-foreground">
-          Pressure Level <span className="text-red-500" aria-hidden="true">*</span>
-        </p>
-        <div role="group" aria-labelledby="severity-label" className="flex gap-2">
-          {SEVERITY_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setValue("severity", opt.value, { shouldValidate: true })}
-              aria-pressed={severity === opt.value}
-              className={cn(
-                "flex-1 min-h-[48px] rounded-lg border-2 px-2 py-2 text-sm font-semibold transition-all",
-                severity === opt.value
-                  ? SEVERITY_COLORS[opt.value]
-                  : "border-border bg-background text-muted-foreground hover:bg-muted"
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Threshold exceeded toggle */}
-      <div className="rounded-xl border-2 border-border bg-card px-4 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex-1">
-            <p className="text-base font-semibold text-foreground">
-              Did this exceed the action threshold?
-            </p>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              The point where treatment becomes cost-effective
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={thresholdExceeded}
-            onClick={() => setValue("threshold_exceeded", !thresholdExceeded, { shouldValidate: true })}
-            className={cn(
-              "relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              thresholdExceeded ? "bg-red-500" : "bg-muted"
-            )}
-          >
-            <span
-              className={cn(
-                "pointer-events-none inline-block h-6 w-6 rounded-full bg-white shadow transition-transform",
-                thresholdExceeded ? "translate-x-7" : "translate-x-0"
-              )}
-            />
-            <span className="sr-only">
-              {thresholdExceeded ? "Threshold exceeded" : "Threshold not exceeded"}
-            </span>
-          </button>
-        </div>
-      </div>
-
-      <FormField
-        label="Action Taken (optional)"
-        htmlFor="action_taken"
-        error={errors.action_taken?.message}
-      >
-        <Input
-          id="action_taken"
-          placeholder="e.g. Scheduled foliar spray for next week"
-          className="h-12 text-base"
-          {...register("action_taken")}
-        />
-      </FormField>
-    </>
-  );
-}
-
-function HarvestFields({
-  register,
-  errors,
-}: {
-  register: ReturnType<typeof useForm>["register"];
-  errors: Record<string, { message?: string } | undefined>;
-}) {
-  return (
-    <>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <FormField
-          label="Yield (bu/acre)"
-          htmlFor="yield_bu_ac"
-          required
-          error={errors.yield_bu_ac?.message}
-        >
-          <Input
-            id="yield_bu_ac"
-            type="number"
-            step="0.1"
-            placeholder="210"
-            className="h-12 text-base"
-            {...register("yield_bu_ac")}
-          />
-        </FormField>
-        <FormField
-          label="Moisture (%)"
-          htmlFor="moisture_pct"
-          required
-          error={errors.moisture_pct?.message}
-        >
-          <Input
-            id="moisture_pct"
-            type="number"
-            step="0.1"
-            placeholder="15.5"
-            className="h-12 text-base"
-            {...register("moisture_pct")}
-          />
-        </FormField>
-        <FormField
-          label="Test Weight (lbs/bu)"
-          htmlFor="test_weight_lbs_bu"
-          required
-          error={errors.test_weight_lbs_bu?.message}
-        >
-          <Input
-            id="test_weight_lbs_bu"
-            type="number"
-            step="0.1"
-            placeholder="56.0"
-            className="h-12 text-base"
-            {...register("test_weight_lbs_bu")}
-          />
-        </FormField>
-      </div>
-      <FormField
-        label="Elevator Ticket Number (optional)"
-        htmlFor="elevator_ticket"
-        error={errors.elevator_ticket?.message}
-      >
-        <Input
-          id="elevator_ticket"
-          placeholder="e.g. IOW-2025-8812"
-          className="h-12 text-base"
-          {...register("elevator_ticket")}
-        />
-      </FormField>
-    </>
-  );
-}
-
-// ── Main form ──────────────────────────────────────────────────────────────────
 
 interface ActivityFormProps {
+  /** Farm the fields belong to; kept in every link after saving. */
+  farmId: string;
+  /** The farm's fields. The page shows an empty state instead when there are none. */
   fields: Field[];
   defaultFieldId?: string;
   defaultActivityType?: ActivityType;
 }
 
 export function ActivityForm({
+  farmId,
   fields,
   defaultFieldId,
   defaultActivityType,
 }: ActivityFormProps) {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2>(defaultActivityType ? 2 : 1);
-  const [selectedType, setSelectedType] = useState<ActivityType | null>(
-    defaultActivityType ?? null
-  );
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // We use a single RHF instance with loose typing; per-type schema is applied at submit
+  const form = useForm<ActivityFormValues>({
+    resolver: activityFormResolver,
+    defaultValues: activityFormDefaults(fields, defaultFieldId, defaultActivityType),
+  });
   const {
     register,
     handleSubmit,
-    watch,
+    control,
     setValue,
-    reset,
-    formState: { errors, isSubmitting },
-  } = useForm<Record<string, unknown>>({
-    defaultValues: {
-      field_id: defaultFieldId ?? (fields[0]?.id ?? ""),
-      activity_date: new Date().toISOString().slice(0, 10),
-      acres: fields.find((f) => f.id === (defaultFieldId ?? fields[0]?.id))?.acres ?? "",
-      operator: "",
-      restricted_use: false,
-      threshold_exceeded: false,
-      severity: "low",
-      pest_type: "insect",
-      method: "broadcast",
-    },
-  });
+    clearErrors,
+    formState: { errors, isSubmitting, submitCount },
+  } = form;
 
-  // When field changes, pre-fill acres
-  const watchedFieldId = watch("field_id") as string;
-
-  function handleFieldChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    const fieldId = e.target.value;
-    setValue("field_id", fieldId);
-    const f = fields.find((fi) => fi.id === fieldId);
-    if (f) setValue("acres", f.acres);
-  }
+  // useWatch instead of watch(): watch() can't be memoized by React Compiler.
+  const selectedType =
+    (useWatch({ control, name: "activity_type" }) as ActivityType | undefined) ?? null;
+  const selectedFieldId = useWatch({ control, name: "field_id" });
+  const currentField = fields.find((f) => f.id === selectedFieldId);
+  const farmQuery = `farm_id=${encodeURIComponent(farmId)}`;
+  const fieldIdError = fieldError(errors, "field_id");
+  const dateError = fieldError(errors, "activity_date");
+  const hasErrors = submitCount > 0 && Object.keys(errors).length > 0;
 
   function handleTypeSelect(type: ActivityType) {
-    setSelectedType(type);
     setValue("activity_type", type);
+    // Errors from the previously selected type no longer apply.
+    clearErrors();
   }
 
   function goToStep2() {
@@ -742,304 +122,153 @@ export function ActivityForm({
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function onSubmit(data: Record<string, unknown>) {
-    // Validate with the appropriate Zod schema
-    const schema =
-      selectedType === "plant"
-        ? plantSchema
-        : selectedType === "spray"
-          ? spraySchema
-          : selectedType === "fertilize"
-            ? fertilizeSchema
-            : selectedType === "scout"
-              ? scoutSchema
-              : harvestSchema;
+  async function onSubmit(values: ActivityFormValues) {
+    if (!selectedType) return;
+    setSubmitError(null);
 
-    const result = schema.safeParse({ ...data, activity_type: selectedType });
-    if (!result.success) {
-      toast.error("Please fix the errors before saving.");
+    let created: ActivityRecord;
+    try {
+      created = await api.activities.create(buildActivityCreatePayload(selectedType, values));
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "The activity could not be saved. Check your connection and try again.";
+      setSubmitError(message);
+      toast.error("Activity not saved", { description: message });
       return;
     }
 
-    const selectedField = fields.find((f) => f.id === data.field_id);
-
-    // Build the type-specific details object — strip common + meta fields
-    const {
-      field_id,
-      activity_date,
-      acres,
-      operator,
-      equipment,
-      cost_per_acre,
-      notes,
-      activity_type: _activityType,
-      ...rawDetails
-    } = result.data as Record<string, unknown>;
-
-    // For spray, details includes all spray-specific keys already present in rawDetails.
-    // For scout/plant/fertilize/harvest the same pattern applies.
-    const details = rawDetails as Parameters<typeof api.activities.create>[0]["details"];
-
-    try {
-      await api.activities.create({
-        field_id: field_id as string,
-        farm_id: selectedField?.farm_id ?? "",
-        activity_type: selectedType!,
-        activity_date: activity_date as string,
-        acres: acres as number,
-        operator: operator as string,
-        equipment: equipment as string | undefined,
-        cost_per_acre: cost_per_acre as number | undefined,
-        notes: notes as string | undefined,
-        details,
-      });
-
-      const fieldName = selectedField?.name ?? "your field";
-      toast.success(`Activity saved for ${fieldName}!`, {
-        description: "Your field log has been updated.",
-        action: {
-          label: "Log Another",
-          onClick: () => {
-            reset();
-            setSelectedType(null);
-            setStep(1);
-          },
-        },
-      });
-
-      router.push("/activities");
-    } catch {
-      toast.error("Failed to save — check your connection and try again.");
+    const fieldName = fields.find((f) => f.id === values["field_id"])?.name ?? "your field";
+    toast.success(`Activity saved for ${fieldName}`, {
+      description: "Your field log has been updated.",
+      action: {
+        label: "Log another",
+        onClick: () => router.push(`/activities/new?${farmQuery}`),
+      },
+    });
+    // e.g. harvest saved but its yield history row could not be synced.
+    for (const warning of created.warnings ?? []) {
+      toast.warning(warning);
     }
+    router.push(`/activities?${farmQuery}`);
   }
 
-  // Sync field_id's acres on mount / field change
-  const currentField = fields.find((f) => f.id === watchedFieldId);
-
   return (
-    <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-6">
-
+    <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-8">
       {/* ── Step 1: Choose field + type ── */}
-      <section aria-labelledby="step1-heading">
-        <div className="mb-4">
-          <h2
-            id="step1-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            Step 1: Which field and what did you do?
-          </h2>
-        </div>
+      <section aria-label="Step 1: which field and what you did">
+        <RuleHead label="Step 1 · Field and activity" />
+        <p className="mt-2 text-sm text-muted-foreground">
+          Which field, and what did you do?
+        </p>
 
-        {/* Field selector */}
-        <div className="space-y-1.5 mb-6">
-          <label
-            htmlFor="field_id"
-            className="block text-base font-medium text-foreground"
-          >
-            Field <span className="text-red-500" aria-hidden="true">*</span>
-          </label>
-          <select
-            id="field_id"
-            className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
-            {...register("field_id")}
-            onChange={handleFieldChange}
-          >
-            {fields.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name} ({f.acres} acres — {f.crop_type})
-              </option>
-            ))}
-          </select>
+        <div className="mt-4 mb-6">
+          <FormField label="Field" htmlFor="field_id" required error={fieldIdError}>
+            <select
+              id="field_id"
+              className={selectClasses}
+              aria-invalid={fieldIdError ? true : undefined}
+              aria-describedby={describedBy("field_id", { error: fieldIdError })}
+              {...register("field_id", {
+                onChange: (event: React.ChangeEvent<HTMLSelectElement>) => {
+                  const field = fields.find((f) => f.id === event.target.value);
+                  if (field) setValue("acres", field.acres);
+                },
+              })}
+            >
+              {fields.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name} ({formatAcres(f.acres)}, {f.crop_type})
+                </option>
+              ))}
+            </select>
+          </FormField>
           {currentField?.boundary_description && (
-            <p className="text-xs text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               {currentField.boundary_description}
             </p>
           )}
         </div>
 
-        {/* Activity type picker */}
-        <ActivityTypePicker
-          value={selectedType}
-          onChange={handleTypeSelect}
-        />
+        <ActivityTypePicker value={selectedType} onChange={handleTypeSelect} />
 
         {step === 1 && (
-          <div className="mt-6">
-            <button
-              type="button"
-              onClick={goToStep2}
-              disabled={!selectedType}
-              className="w-full min-h-[56px] rounded-xl bg-primary px-6 py-3 text-base font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {selectedType ? "Next: Enter details" : "Choose an activity type above"}
-            </button>
-          </div>
+          <Button
+            type="button"
+            onClick={goToStep2}
+            disabled={!selectedType}
+            size="lg"
+            className="mt-6 w-full cursor-pointer"
+          >
+            {selectedType ? "Next: enter details" : "Choose an activity type above"}
+          </Button>
         )}
       </section>
 
-      {/* ── Step 2: Type-specific fields ── */}
+      {/* ── Step 2: Type-specific + common fields ── */}
       {step === 2 && selectedType && (
         <>
-          <hr className="border-border" />
-
-          <section aria-labelledby="step2-heading" className="space-y-5">
+          <section aria-label="Step 2: activity details" className="space-y-5">
             <div>
-              <h2
-                id="step2-heading"
-                className="font-heading text-lg font-semibold text-foreground"
-              >
-                Step 2: Activity details
-              </h2>
-              <p className="text-sm text-muted-foreground mt-0.5">
+              <RuleHead label="Step 2 · Activity details" />
+              <p className="mt-2 text-sm text-muted-foreground">
                 Fill in what happened.
               </p>
             </div>
 
-            {/* Date */}
-            <FormField label="Date" htmlFor="activity_date" required error={errors.activity_date?.message as string | undefined}>
+            <FormField label="Date" htmlFor="activity_date" required error={dateError}>
               <input
                 id="activity_date"
                 type="date"
-                className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
+                max={todayLocalIso()}
+                className={cn(selectClasses, "font-mono")}
+                aria-invalid={dateError ? true : undefined}
+                aria-describedby={describedBy("activity_date", { error: dateError })}
                 {...register("activity_date")}
               />
             </FormField>
 
-            {/* Type-specific fields */}
-            {selectedType === "plant" && (
-              <PlantFields register={register} errors={errors as Record<string, { message?: string } | undefined>} />
-            )}
-            {selectedType === "spray" && (
-              <SprayFields
-                register={register}
-                watch={watch}
-                setValue={setValue}
-                errors={errors as Record<string, { message?: string } | undefined>}
-              />
-            )}
-            {selectedType === "fertilize" && (
-              <FertilizeFields register={register} errors={errors as Record<string, { message?: string } | undefined>} />
-            )}
-            {selectedType === "scout" && (
-              <ScoutFields
-                register={register}
-                watch={watch}
-                setValue={setValue}
-                errors={errors as Record<string, { message?: string } | undefined>}
-              />
-            )}
-            {selectedType === "harvest" && (
-              <HarvestFields register={register} errors={errors as Record<string, { message?: string } | undefined>} />
-            )}
+            <TypeSpecificFields
+              type={selectedType}
+              form={form}
+              cropType={currentField?.crop_type}
+            />
           </section>
 
-          <hr className="border-border" />
+          <CommonFields form={form} notesRequired={selectedType === "other"} />
 
-          {/* ── Common fields ── */}
-          <section aria-labelledby="common-heading" className="space-y-5">
-            <h2
-              id="common-heading"
-              className="font-heading text-base font-semibold text-foreground"
-            >
-              Additional info
-            </h2>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <FormField
-                label="Total Acres"
-                htmlFor="acres"
-                required
-                error={errors.acres?.message as string | undefined}
-              >
-                <Input
-                  id="acres"
-                  type="number"
-                  step="0.1"
-                  className="h-12 text-base"
-                  {...register("acres")}
-                />
-              </FormField>
-              <FormField
-                label="Operator"
-                htmlFor="operator"
-                required
-                error={errors.operator?.message as string | undefined}
-              >
-                <Input
-                  id="operator"
-                  placeholder="Who did this work?"
-                  className="h-12 text-base"
-                  {...register("operator")}
-                />
-              </FormField>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <FormField
-                label="Equipment Used (optional)"
-                htmlFor="equipment"
-                error={errors.equipment?.message as string | undefined}
-              >
-                <Input
-                  id="equipment"
-                  placeholder="e.g. John Deere 1775NT Planter"
-                  className="h-12 text-base"
-                  {...register("equipment")}
-                />
-              </FormField>
-              <FormField
-                label="Cost per Acre (optional)"
-                htmlFor="cost_per_acre"
-                error={errors.cost_per_acre?.message as string | undefined}
-              >
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                    $
-                  </span>
-                  <Input
-                    id="cost_per_acre"
-                    type="number"
-                    step="0.01"
-                    placeholder="0.00"
-                    className="h-12 pl-7 text-base"
-                    {...register("cost_per_acre")}
-                  />
-                </div>
-              </FormField>
-            </div>
-
-            <FormField
-              label="Notes (optional)"
-              htmlFor="notes"
-              error={errors.notes?.message as string | undefined}
-            >
-              <Textarea
-                id="notes"
-                placeholder="Any other details worth recording..."
-                className="min-h-[80px] text-base"
-                {...register("notes")}
-              />
-            </FormField>
-          </section>
-
-          {/* Save button */}
-          <div className="pt-2">
-            <button
+          <div className="space-y-3 border-t border-border pt-5">
+            {submitError && (
+              <div role="alert">
+                <EdgeNote tone="destructive" title="Not saved">
+                  {submitError}
+                </EdgeNote>
+              </div>
+            )}
+            {hasErrors && !submitError && (
+              <p className="text-sm text-destructive">
+                Some details need attention. Check the messages above.
+              </p>
+            )}
+            <Button
               type="submit"
               disabled={isSubmitting}
-              className="w-full min-h-[56px] rounded-xl bg-accent px-6 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              size="lg"
+              className="w-full cursor-pointer"
             >
-              {isSubmitting ? "Saving..." : "Save Activity"}
-            </button>
+              {isSubmitting ? "Saving..." : "Save activity"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => setStep(1)}
+              className="w-full cursor-pointer"
+            >
+              Back: change field or activity type
+            </Button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setStep(1)}
-            className="w-full min-h-[48px] rounded-xl border border-border bg-background px-6 py-2 text-base font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Back — change field or activity type
-          </button>
         </>
       )}
     </form>

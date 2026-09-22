@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
@@ -24,40 +24,38 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { OnboardingProgress } from "@/components/shared/onboarding-progress";
+import { CROP_OPTIONS, CROP_VALUES } from "@/lib/crops";
+import { ONBOARDING_STORAGE_KEYS } from "@/lib/onboarding";
+import { safeGetJSON, safeSetJSON } from "@/lib/storage";
 
 // ---- Types ----
-const CROP_OPTIONS = [
-  "Corn",
-  "Soybeans",
-  "Wheat",
-  "Sorghum",
-  "Other",
-] as const;
-
-type CropType = (typeof CROP_OPTIONS)[number];
-
 interface FieldEntry {
   id: string;
   name: string;
   acres: number;
-  crop_type: CropType;
+  /**
+   * Free text on the backend (`crop_type`, max 100 chars). New entries come
+   * from CROP_OPTIONS; drafts saved earlier may hold any string.
+   */
+  crop_type: string;
   boundary_description: string;
 }
 
 // ---- Validation schema ----
+const CROP_SET = new Set<string>(CROP_VALUES);
+
 const fieldSchema = z.object({
   name: z.string().min(1, "Field name is required"),
   acres: z
     .number({ error: "Enter a valid number of acres" })
     .positive("Acres must be greater than 0"),
-  crop_type: z.enum(["Corn", "Soybeans", "Wheat", "Sorghum", "Other"], {
-    error: "Please select a crop type",
-  }),
+  crop_type: z
+    .string({ error: "Please select a crop type" })
+    .refine((value) => CROP_SET.has(value), "Please select a crop type"),
   boundary_description: z.string().optional(),
 });
 
@@ -65,16 +63,12 @@ type FieldFormValues = z.infer<typeof fieldSchema>;
 
 // ---- Helpers ----
 function loadFields(): FieldEntry[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem("onboarding_fields") ?? "[]");
-  } catch {
-    return [];
-  }
+  const saved = safeGetJSON<unknown>(ONBOARDING_STORAGE_KEYS.fields, []);
+  return Array.isArray(saved) ? (saved as FieldEntry[]) : [];
 }
 
 function saveFields(fields: FieldEntry[]) {
-  localStorage.setItem("onboarding_fields", JSON.stringify(fields));
+  safeSetJSON(ONBOARDING_STORAGE_KEYS.fields, fields);
 }
 
 export default function FieldSetupPage() {
@@ -84,6 +78,7 @@ export default function FieldSetupPage() {
 
   // Hydrate from localStorage after mount
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is unavailable during prerender, so load saved fields after mount
     setFields(loadFields());
   }, []);
 
@@ -91,8 +86,8 @@ export default function FieldSetupPage() {
     register,
     handleSubmit,
     setValue,
-    watch,
     reset,
+    control,
     formState: { errors },
   } = useForm<FieldFormValues>({
     resolver: zodResolver(fieldSchema),
@@ -104,7 +99,7 @@ export default function FieldSetupPage() {
     },
   });
 
-  const selectedCrop = watch("crop_type");
+  const selectedCrop = useWatch({ control, name: "crop_type" });
 
   function addField(data: FieldFormValues) {
     const newField: FieldEntry = {
@@ -139,7 +134,7 @@ export default function FieldSetupPage() {
     <div className="flex flex-col gap-6">
       <OnboardingProgress currentStep={3} />
 
-      <div>
+      <div className="border-b-2 border-rule-strong pb-4">
         <h1 className="font-heading text-2xl font-bold">Add your fields</h1>
         <p className="mt-1 text-base text-muted-foreground">
           Add each field one at a time. You can add more fields after setup.
@@ -159,7 +154,7 @@ export default function FieldSetupPage() {
           >
             {/* Field name */}
             <div className="flex flex-col gap-2">
-              <Label htmlFor="field-name" className="text-base font-medium">
+              <Label htmlFor="field-name">
                 Field name
               </Label>
               <Input
@@ -168,7 +163,7 @@ export default function FieldSetupPage() {
                 placeholder="e.g. North 40, Home Quarter"
                 aria-describedby={errors.name ? "field-name-error" : undefined}
                 aria-invalid={!!errors.name}
-                className="h-12 text-base px-4"
+               
                 {...register("name")}
               />
               {errors.name && (
@@ -184,7 +179,7 @@ export default function FieldSetupPage() {
 
             {/* Acres */}
             <div className="flex flex-col gap-2">
-              <Label htmlFor="field-acres" className="text-base font-medium">
+              <Label htmlFor="field-acres">
                 Acres
               </Label>
               <Input
@@ -195,7 +190,7 @@ export default function FieldSetupPage() {
                 min={0}
                 aria-describedby={errors.acres ? "field-acres-error" : undefined}
                 aria-invalid={!!errors.acres}
-                className="h-12 text-base px-4"
+               
                 {...register("acres", { valueAsNumber: true })}
               />
               {errors.acres && (
@@ -213,16 +208,15 @@ export default function FieldSetupPage() {
             <div className="flex flex-col gap-2">
               <Label
                 htmlFor="field-crop-trigger"
-                className="text-base font-medium"
+               
               >
                 Primary crop
               </Label>
               <Select
                 value={selectedCrop}
                 onValueChange={(val) =>
-                  setValue("crop_type", val as CropType, {
-                    shouldValidate: true,
-                  })
+                  val !== null &&
+                  setValue("crop_type", val, { shouldValidate: true })
                 }
               >
                 <SelectTrigger
@@ -238,11 +232,11 @@ export default function FieldSetupPage() {
                 <SelectContent>
                   {CROP_OPTIONS.map((crop) => (
                     <SelectItem
-                      key={crop}
-                      value={crop}
+                      key={crop.value}
+                      value={crop.value}
                       className="text-base py-3"
                     >
-                      {crop}
+                      {crop.value}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -262,7 +256,7 @@ export default function FieldSetupPage() {
             <div className="flex flex-col gap-2">
               <Label
                 htmlFor="field-boundary"
-                className="text-base font-medium"
+               
               >
                 Location description{" "}
                 <span className="text-muted-foreground font-normal">
@@ -330,7 +324,7 @@ export default function FieldSetupPage() {
                       type="button"
                       onClick={() => removeField(field.id)}
                       aria-label={`Remove ${field.name}`}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors cursor-pointer"
+                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors cursor-pointer"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </button>
@@ -354,7 +348,8 @@ export default function FieldSetupPage() {
         <Button
           type="button"
           onClick={handleNext}
-          className="h-12 w-full bg-accent text-accent-foreground hover:bg-accent/90 text-base font-semibold cursor-pointer"
+          size="lg"
+          className="w-full cursor-pointer"
         >
           Next: Your Practices
         </Button>

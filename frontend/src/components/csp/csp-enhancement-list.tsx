@@ -1,139 +1,104 @@
-import { CheckCircle2, Circle, Zap, Package } from "lucide-react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Stamp } from "@/components/shared/record";
+import { practiceStandardStamp } from "@/lib/csp-status";
+import { toneTextClasses } from "@/lib/status-styles";
+import { cn } from "@/lib/utils";
 import type { CSPEnhancement } from "@/lib/api/types";
 
-// ── Difficulty label ──────────────────────────────────────────────────────────
+/**
+ * Conservation activities listed the way a practice schedule is printed: the
+ * practice code stamped, the points and dollars in a mono column on the right,
+ * hairlines between entries.
+ */
 
-function difficultyFromPoints(points: number): {
-  label: string;
-  color: string;
-} {
-  if (points >= 13)
-    return { label: "High impact", color: "text-green-700 bg-green-100" };
-  if (points >= 8)
-    return { label: "Medium impact", color: "text-amber-700 bg-amber-100" };
-  return { label: "Lower impact", color: "text-muted-foreground bg-muted" };
+// ── Impact label ──────────────────────────────────────────────────────────────
+
+function impactLabel(points: number): string {
+  if (points >= 13) return "High impact";
+  if (points >= 8) return "Medium impact";
+  return "Lower impact";
 }
 
-// ── Status chip ───────────────────────────────────────────────────────────────
+// ── Status word ───────────────────────────────────────────────────────────────
 
-function StatusChip({
-  status,
-}: {
-  status: CSPEnhancement["status"];
-}) {
-  if (status === "active") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-        <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-        Active
-      </span>
-    );
-  }
-  if (status === "committed") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-        <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-        Committed
-      </span>
-    );
-  }
-  if (status === "considering") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
-        <Circle className="h-3 w-3" aria-hidden="true" />
-        Considering
-      </span>
-    );
-  }
-  return null;
+const STATUS_WORD: Record<string, { label: string; className: string }> = {
+  active: { label: "Active", className: "text-success" },
+  committed: { label: "Committed", className: "text-primary" },
+  considering: { label: "Considering", className: "text-muted-foreground" },
+};
+
+function StatusWord({ status }: { status: CSPEnhancement["status"] }) {
+  const entry = status ? STATUS_WORD[status] : undefined;
+  if (!entry) return null;
+  return (
+    <span
+      className={cn(
+        "font-mono text-[0.6875rem] tracking-[0.08em] uppercase",
+        entry.className
+      )}
+    >
+      {entry.label}
+    </span>
+  );
 }
 
-// ── Single enhancement item ───────────────────────────────────────────────────
+// ── Single activity row ───────────────────────────────────────────────────────
 
 function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
-  const difficulty = difficultyFromPoints(enhancement.point_weight);
-  const isSelected =
-    enhancement.status === "active" || enhancement.status === "committed";
-
   return (
-    <li
-      className={`rounded-xl border p-4 space-y-3 ${isSelected ? "border-primary/30 bg-primary/5" : "border-border bg-card"}`}
-    >
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
-          <div
-            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${isSelected ? "bg-primary/10" : "bg-muted"}`}
-          >
-            {enhancement.is_bundle_eligible ? (
-              <Package
-                className={`h-4 w-4 ${isSelected ? "text-primary" : "text-muted-foreground"}`}
-                aria-hidden="true"
-              />
-            ) : (
-              <Zap
-                className={`h-4 w-4 ${isSelected ? "text-primary" : "text-muted-foreground"}`}
-                aria-hidden="true"
-              />
-            )}
+    <li className="space-y-2 border-b border-rule py-4 last:border-0">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Stamp>{practiceStandardStamp(enhancement.practice_standard_code)}</Stamp>
+            <span className="sr-only">
+              NRCS practice standard {enhancement.practice_standard_code}
+            </span>
+            <StatusWord status={enhancement.status} />
           </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
-              <span className="font-mono text-xs font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                {enhancement.code}
-              </span>
-              {enhancement.status && <StatusChip status={enhancement.status} />}
-            </div>
-            <p className="text-sm font-semibold text-foreground leading-snug">
-              {enhancement.name}
-            </p>
-            <p className="text-xs text-muted-foreground">{enhancement.category}</p>
-          </div>
+          <p className="mt-1.5 text-sm leading-snug font-semibold text-foreground">
+            {enhancement.name}
+          </p>
+          <p className="text-xs text-muted-foreground">{enhancement.category}</p>
         </div>
-        {/* Point weight */}
         <div className="shrink-0 text-right">
-          <span
-            className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${difficulty.color}`}
-          >
+          <p className="font-mono text-sm font-medium text-foreground">
             +{enhancement.point_weight} pts
-          </span>
+          </p>
+          <p className="font-mono text-[0.6875rem] text-muted-foreground uppercase">
+            {impactLabel(enhancement.point_weight)}
+          </p>
         </div>
       </div>
 
-      {/* Description */}
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p className="max-w-[62ch] text-sm leading-relaxed text-muted-foreground">
         {enhancement.description}
       </p>
 
-      {/* Implementation note */}
       {enhancement.implementation_notes && (
-        <p className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+        <p className="max-w-[62ch] text-xs leading-relaxed text-muted-foreground">
           <span className="font-medium text-foreground">How it works: </span>
           {enhancement.implementation_notes}
         </p>
       )}
 
-      {/* Payment info */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          <span>
-            ${enhancement.base_payment_rate}/{enhancement.payment_unit}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <div className="flex flex-wrap items-center gap-x-4 font-mono text-xs text-muted-foreground">
+          <span title={enhancement.rate_is_estimate ? enhancement.rate_basis : undefined}>
+            ${enhancement.base_payment_rate.toFixed(2)}/{enhancement.payment_unit}
+            {enhancement.rate_is_estimate ? " (est.)" : ""}
           </span>
-          {enhancement.is_bundle_eligible && (
-            <span className="text-amber-600 font-medium">
-              Bundle eligible (115% rate)
-            </span>
-          )}
-          {enhancement.eqip_practice_code && (
-            <span className="font-mono bg-muted px-1.5 py-0.5 rounded text-foreground">
-              EQIP {enhancement.eqip_practice_code}
+          {enhancement.higher_payment && (
+            <span className={cn("font-medium", toneTextClasses.warning)}>
+              Higher payment
+              {enhancement.higher_payment_category
+                ? `: ${enhancement.higher_payment_category}`
+                : ""}
             </span>
           )}
         </div>
         {enhancement.estimated_payment !== undefined &&
           enhancement.estimated_payment !== null && (
-            <span className="text-sm font-semibold text-primary">
+            <span className="font-mono text-sm font-medium text-foreground">
               ~${enhancement.estimated_payment.toLocaleString()}/yr
             </span>
           )}
@@ -152,37 +117,34 @@ interface CSPEnhancementListProps {
 
 export function CSPEnhancementList({
   enhancements,
-  title = "Recommended enhancements",
+  title = "Recommended conservation activities",
   showEmpty = true,
 }: CSPEnhancementListProps) {
   if (enhancements.length === 0 && !showEmpty) return null;
 
+  // Two lists can appear on one page, so the heading id follows the title.
+  const headingId = `enhancements-${title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")}`;
+
   return (
-    <section aria-labelledby="enhancements-heading" className="space-y-4">
-      <div>
-        <h2
-          id="enhancements-heading"
-          className="font-heading text-lg font-semibold text-foreground"
-        >
-          {title}
-        </h2>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Conservation activities that increase your score and add to your
-          annual payment
-        </p>
+    <section aria-labelledby={headingId} className="space-y-2">
+      <div className="rule-head">
+        <h2 id={headingId}>{title}</h2>
+        <span aria-hidden="true" className="h-px flex-1 bg-rule" />
       </div>
+      <p className="max-w-[62ch] text-sm text-muted-foreground">
+        Conservation activities that increase your score and add to your annual
+        payment
+      </p>
 
       {enhancements.length === 0 ? (
-        <Card>
-          <CardContent className="py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              No enhancements available. Complete your eligibility evaluation
-              first.
-            </p>
-          </CardContent>
-        </Card>
+        <p className="py-6 text-sm text-muted-foreground">
+          No activities available. Complete your eligibility evaluation first.
+        </p>
       ) : (
-        <ul className="space-y-3" aria-label="Enhancement activities">
+        <ul className="mt-2" aria-label="Conservation activities">
           {enhancements.map((enh) => (
             <EnhancementItem key={enh.id} enhancement={enh} />
           ))}

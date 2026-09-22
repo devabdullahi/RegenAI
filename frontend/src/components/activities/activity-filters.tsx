@@ -1,17 +1,12 @@
 "use client";
 
-import { Sprout, Droplets, FlaskConical, Eye, Wheat, X } from "lucide-react";
+import { X } from "lucide-react";
+import { RuleHead, Sheet } from "@/components/shared/record";
+import { Label } from "@/components/ui/label";
+import { ACTIVITY_TYPES } from "@/lib/activity-types";
+import { formatAcres } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { ActivityType } from "@/lib/api/types";
-import type { Field } from "@/lib/api/types";
-
-const TYPE_OPTIONS: { value: ActivityType; label: string; icon: React.ElementType }[] = [
-  { value: "plant", label: "Planting", icon: Sprout },
-  { value: "spray", label: "Spray", icon: Droplets },
-  { value: "fertilize", label: "Fertilize", icon: FlaskConical },
-  { value: "scout", label: "Scouting", icon: Eye },
-  { value: "harvest", label: "Harvest", icon: Wheat },
-];
+import type { ActivityType, Field } from "@/lib/api/types";
 
 export interface ActivityFiltersState {
   fieldId: string | null;
@@ -20,136 +15,120 @@ export interface ActivityFiltersState {
   dateTo: string | null;
 }
 
+export const EMPTY_ACTIVITY_FILTERS: ActivityFiltersState = {
+  fieldId: null,
+  activityType: null,
+  dateFrom: null,
+  dateTo: null,
+};
+
 interface ActivityFiltersProps {
   fields: Field[];
   filters: ActivityFiltersState;
   onChange: (filters: ActivityFiltersState) => void;
 }
 
-export function ActivityFilters({ fields, filters, onChange }: ActivityFiltersProps) {
-  const hasActiveFilters =
-    filters.fieldId !== null ||
-    filters.activityType !== null ||
-    filters.dateFrom !== null ||
-    filters.dateTo !== null;
+/** A blank on the sheet: ruled box, cut corners, figures in mono. */
+const fieldInputClasses =
+  "h-12 w-full rounded-sm border border-input bg-card px-3 text-base text-foreground transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40";
 
-  function clearAll() {
-    onChange({ fieldId: null, activityType: null, dateFrom: null, dateTo: null });
-  }
+export function ActivityFilters({ fields, filters, onChange }: ActivityFiltersProps) {
+  const hasActiveFilters = Object.values(filters).some((v) => v !== null);
 
   return (
-    <div className="space-y-4 rounded-xl border border-border bg-card px-4 py-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-foreground">Filter activities</p>
-        {hasActiveFilters && (
-          <button
-            type="button"
-            onClick={clearAll}
-            className="flex min-h-[44px] items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <X className="h-3.5 w-3.5" aria-hidden="true" />
-            Clear all
-          </button>
-        )}
-      </div>
+    <Sheet className="space-y-4 px-4 py-4">
+      <RuleHead
+        label="Filter activities"
+        action={
+          hasActiveFilters ? (
+            <button
+              type="button"
+              onClick={() => onChange(EMPTY_ACTIVITY_FILTERS)}
+              className="flex min-h-12 items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+              Clear all
+            </button>
+          ) : undefined
+        }
+      />
 
-      {/* Field filter */}
       <div className="space-y-1.5">
-        <label
-          htmlFor="filter-field"
-          className="block text-xs font-medium text-muted-foreground uppercase tracking-wide"
-        >
-          Field
-        </label>
+        <Label htmlFor="filter-field">Field</Label>
         <select
           id="filter-field"
           value={filters.fieldId ?? ""}
-          onChange={(e) =>
-            onChange({ ...filters, fieldId: e.target.value || null })
-          }
-          className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
+          onChange={(e) => onChange({ ...filters, fieldId: e.target.value || null })}
+          className={fieldInputClasses}
         >
           <option value="">All fields</option>
           {fields.map((f) => (
             <option key={f.id} value={f.id}>
-              {f.name} ({f.acres} ac)
+              {f.name} ({formatAcres(f.acres, { short: true })})
             </option>
           ))}
         </select>
       </div>
 
-      {/* Activity type filter — pill buttons */}
       <div className="space-y-1.5">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <p
+          id="filter-type-label"
+          className="font-mono text-xs font-medium tracking-[0.1em] text-muted-foreground uppercase"
+        >
           Activity type
         </p>
-        <div className="flex flex-wrap gap-2">
-          {TYPE_OPTIONS.map((opt) => {
-            const isActive = filters.activityType === opt.value;
-            const Icon = opt.icon;
+        <div role="group" aria-labelledby="filter-type-label" className="flex flex-wrap gap-2">
+          {ACTIVITY_TYPES.map((config) => {
+            const isActive = filters.activityType === config.id;
+            const Icon = config.icon;
             return (
               <button
-                key={opt.value}
+                key={config.id}
                 type="button"
                 onClick={() =>
-                  onChange({
-                    ...filters,
-                    activityType: isActive ? null : opt.value,
-                  })
+                  onChange({ ...filters, activityType: isActive ? null : config.id })
                 }
                 aria-pressed={isActive}
                 className={cn(
-                  "flex min-h-[44px] items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-colors",
+                  "flex min-h-12 items-center gap-1.5 rounded-sm border px-3 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
                   isActive
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:text-foreground"
+                    ? "border-foreground bg-muted text-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
                 )}
               >
-                <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                {opt.label}
+                <Icon
+                  className={cn("h-4 w-4 shrink-0", config.markerClasses)}
+                  aria-hidden="true"
+                />
+                {config.label}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Date range */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <label
-            htmlFor="filter-date-from"
-            className="block text-xs font-medium text-muted-foreground uppercase tracking-wide"
-          >
-            From date
-          </label>
+          <Label htmlFor="filter-date-from">From date</Label>
           <input
             id="filter-date-from"
             type="date"
             value={filters.dateFrom ?? ""}
-            onChange={(e) =>
-              onChange({ ...filters, dateFrom: e.target.value || null })
-            }
-            className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
+            onChange={(e) => onChange({ ...filters, dateFrom: e.target.value || null })}
+            className={cn(fieldInputClasses, "font-mono")}
           />
         </div>
         <div className="space-y-1.5">
-          <label
-            htmlFor="filter-date-to"
-            className="block text-xs font-medium text-muted-foreground uppercase tracking-wide"
-          >
-            To date
-          </label>
+          <Label htmlFor="filter-date-to">To date</Label>
           <input
             id="filter-date-to"
             type="date"
             value={filters.dateTo ?? ""}
-            onChange={(e) =>
-              onChange({ ...filters, dateTo: e.target.value || null })
-            }
-            className="h-12 w-full rounded-lg border border-input bg-background px-3 text-base text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/50"
+            onChange={(e) => onChange({ ...filters, dateTo: e.target.value || null })}
+            className={cn(fieldInputClasses, "font-mono")}
           />
         </div>
       </div>
-    </div>
+    </Sheet>
   );
 }

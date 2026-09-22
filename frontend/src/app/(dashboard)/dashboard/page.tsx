@@ -1,8 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Tractor, LayoutDashboard, AlertCircle } from "lucide-react";
+import { Plus, Tractor, Wheat } from "lucide-react";
 import { FieldSelector } from "@/components/dashboard/field-selector";
 import {
   RecommendationCard,
@@ -13,11 +11,42 @@ import { SoilWidget } from "@/components/dashboard/soil-widget";
 import { CreditPanel } from "@/components/dashboard/credit-panel";
 import { CspStatusWidget } from "@/components/csp/csp-status-widget";
 import { RecentActivityWidget } from "@/components/activities/recent-activity-widget";
-import { api } from "@/lib/api/server-client";
-import type { Farm, Field, Recommendation, CreditEligibility, ActivitySummary, CSPEligibility } from "@/lib/api/types";
+import { UpcomingDeadlines } from "@/components/shared/deadline-alerts";
+import { RuleHead } from "@/components/shared/record";
+import {
+  EmptyState,
+  ErrorState,
+  NoFarmSelected,
+} from "@/components/shared/page-states";
+import { api, ApiRequestError } from "@/lib/api/server-client";
+import {
+  activityToView,
+  adaptDeadlines,
+  adaptEligibility,
+  creditsToList,
+} from "@/lib/api/adapters";
+import { formatAcres, pluralize } from "@/lib/format";
+import type {
+  CreditEligibility,
+  CSPEligibilityResponse,
+  Farm,
+  Field,
+  FieldActivity,
+  Recommendation,
+  SoilProfile,
+  WeatherData,
+} from "@/lib/api/types";
+
+const RECENT_ACTIVITY_LIMIT = 5;
 
 interface DashboardPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}
+
+function recentActivityCopy(count: number): string {
+  if (count === 0) return "No field activities logged yet";
+  if (count === 1) return "Your most recent logged field activity";
+  return `Your last ${count} logged field ${pluralize(count, "activity", "activities")}`;
 }
 
 export default async function DashboardPage({
@@ -25,43 +54,84 @@ export default async function DashboardPage({
 }: DashboardPageProps) {
   const params = await searchParams;
 
-  const farmId =
+  const farmIdParam =
     typeof params.farm === "string" ? params.farm : undefined;
   const fieldIdParam =
     typeof params.field === "string" ? params.field : undefined;
 
-  // No farm selected — prompt the user
-  if (!farmId) {
-    return <NoFarmSelected />;
+  if (!farmIdParam) {
+    return (
+      <div className="pb-20 sm:pb-0">
+        <NoFarmSelected
+          actions={[
+            { label: "Go to My Farms", href: "/farms", icon: Tractor },
+            { label: "Add a New Farm", href: "/onboarding", variant: "outline", icon: Plus },
+          ]}
+        />
+      </div>
+    );
   }
+  const farmId: string = farmIdParam;
+  const dashboardHref = `/dashboard?farm=${encodeURIComponent(farmId)}`;
 
-  // Fetch farm, fields, and dashboard data concurrently
   let farm: Farm;
-  let farmFields: Field[];
-  let recommendations: Recommendation[];
-  let credits: CreditEligibility[];
-  let activitySummary: ActivitySummary;
-  let cspEligibility: CSPEligibility | null;
-
   try {
     farm = await api.farms.get(farmId);
-  } catch {
-    return <NoFarmSelected />;
+  } catch (err) {
+    // Only a 404 means the farm is gone or not yours; other failures are errors.
+    if (err instanceof ApiRequestError && err.code === 404) {
+      return (
+        <div className="pb-20 sm:pb-0">
+          <NoFarmSelected
+            title="Farm not found"
+            description="This farm does not exist or you do not have access to it. Choose one of your farms."
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="pb-20 sm:pb-0">
+        <ErrorState
+          card
+          title="Couldn't load dashboard"
+          message={err instanceof Error ? err.message : undefined}
+          actions={[
+            { label: "Try again", href: dashboardHref },
+            { label: "Back to farms", href: "/farms", variant: "outline" },
+          ]}
+        />
+      </div>
+    );
   }
 
+  // Farm-level data. Fields are required; credits and CSP degrade gracefully.
+  let farmFields: Field[];
+  let credits: CreditEligibility[];
+  let cspResp: CSPEligibilityResponse | null;
+
   try {
-    [farmFields, recommendations, credits, activitySummary, cspEligibility] =
-      await Promise.all([
-        api.fields.list(farmId),
-        api.recommendations.list(farmId),
-        api.credits.getReport(farmId),
-        api.activities.list(farmId),
-        api.csp.getEligibility(farmId).catch(() => null),
-      ]);
+    const [fieldsResp, creditsResp, cspEligibilityResp] = await Promise.all([
+      api.fields.list(farmId),
+      api.credits.get(farmId).catch(() => null),
+      api.csp.getEligibility(farmId).catch(() => null),
+    ]);
+    farmFields = fieldsResp;
+    credits = creditsToList(creditsResp);
+    cspResp = cspEligibilityResp;
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to load dashboard data.";
-    return <DashboardError message={message} farmId={farmId} />;
+    return (
+      <div className="pb-20 sm:pb-0">
+        <ErrorState
+          card
+          title="Couldn't load dashboard"
+          message={err instanceof Error ? err.message : undefined}
+          actions={[
+            { label: "Try again", href: dashboardHref },
+            { label: "Back to farms", href: "/farms", variant: "outline" },
+          ]}
+        />
+      </div>
+    );
   }
 
   // Default to first field if no field param
@@ -71,54 +141,96 @@ export default async function DashboardPage({
   if (!selectedField) {
     return (
       <div className="pb-20 sm:pb-0">
-        <p className="text-muted-foreground text-sm">
-          No fields found for this farm.{" "}
-          <Link href="/farms" className="text-primary underline">
-            Back to farms
-          </Link>
-        </p>
+        <EmptyState
+          card
+          icon={Wheat}
+          title="No fields yet"
+          message={`${farm.name} has no fields. Add a field to see recommendations, weather, and soil data.`}
+          actions={[
+            { label: "View farm", href: `/farms/${encodeURIComponent(farmId)}` },
+            { label: "Back to farms", href: "/farms", variant: "outline" },
+          ]}
+        />
       </div>
     );
   }
 
-  // Filter recommendations to the selected field
-  const fieldRecommendations = recommendations.filter(
-    (r) => r.field_id === selectedField.id
-  );
+  // Field-level data for the selected field, plus recent activity across all
+  // fields. Every call tolerates failure so one bad widget can't break the page.
+  const [recommendations, weather, soil, cspPayments, activityLists, deadlinesResp] =
+    await Promise.all([
+      api.recommendations
+        .list(selectedField.id)
+        .catch((): Recommendation[] => []),
+      api.fields.getWeather(selectedField.id).catch((): WeatherData[] => []),
+      api.fields.getSoil(selectedField.id).catch((): SoilProfile | null => null),
+      cspResp
+        ? api.csp.getPayments(farmId).catch(() => null)
+        : Promise.resolve(null),
+      Promise.all(
+        farmFields.map((f) =>
+          api.activities
+            .list(f.id, { limit: RECENT_ACTIVITY_LIMIT })
+            .then((r) => r.activities.map((a) => activityToView(a, farmId, f.acres)))
+            .catch((): FieldActivity[] => [])
+        )
+      ),
+      api.csp.getDeadlines(farm.state).catch(() => null),
+    ]);
 
-  // Build field name map for the activity widget
+  const upcomingDeadlines = adaptDeadlines(deadlinesResp);
+
+  const recentActivities = activityLists
+    .flat()
+    .sort((a, b) => b.activity_date.localeCompare(a.activity_date))
+    .slice(0, RECENT_ACTIVITY_LIMIT);
+
+  const cspEligibility = cspResp
+    ? adaptEligibility(cspResp, { payments: cspPayments })
+    : null;
+
   const fieldNameMap = Object.fromEntries(
     farmFields.map((f) => [f.id, f.name])
   );
 
   return (
-    <div className="pb-20 sm:pb-0 space-y-8">
-      {/* Page header */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link href="/farms" className="hover:text-foreground transition-colors">
+    <div className="space-y-10 pb-20 sm:pb-0">
+      {/* Masthead of the record: whose farm, which sheet, how big */}
+      <div className="border-b-2 border-rule-strong pb-3">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link
+            href={`/farms/${encodeURIComponent(farmId)}`}
+            className="transition-colors hover:text-foreground"
+          >
             {farm.name}
           </Link>
-          <span>&rsaquo;</span>
-          <span className="text-foreground font-medium">Dashboard</span>
-        </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Farm Dashboard
+          <span aria-hidden="true">&rsaquo;</span>
+          <span className="font-medium text-foreground" aria-current="page">
+            Dashboard
+          </span>
+        </nav>
+        <h1 className="font-heading mt-1 text-[1.75rem] font-semibold text-foreground sm:text-3xl">
+          Farm dashboard
         </h1>
-        <p className="text-muted-foreground text-sm">
-          {farm.state} &middot; {farm.total_acres.toLocaleString()} total acres
+        <p className="mt-1 text-sm text-muted-foreground">
+          {farm.state} &middot;{" "}
+          <span className="font-mono">
+            {formatAcres(farm.total_acres, { short: true })}
+          </span>{" "}
+          total
         </p>
       </div>
 
-      {/* Field selector */}
-      {farmFields.length > 0 && (
-        <div className="rounded-xl border border-border bg-card px-4 py-3">
-          <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Viewing field
-          </p>
+      {/* Which field the sheet is about */}
+      <div>
+        <RuleHead label="Viewing field" />
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
           <Suspense
             fallback={
-              <div className="h-12 w-full rounded-lg bg-muted animate-pulse" />
+              <div className="h-12 w-full max-w-xs animate-pulse rounded-sm bg-muted" />
             }
           >
             <FieldSelector
@@ -128,192 +240,80 @@ export default async function DashboardPage({
             />
           </Suspense>
           {selectedField.boundary_description && (
-            <p className="mt-1.5 text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {selectedField.boundary_description}
             </p>
           )}
         </div>
-      )}
+      </div>
 
-      {/* ── Section 1: What should I do this week? ── */}
+      {/* ── The decision: what to do this week ── */}
       <section aria-labelledby="recommendations-heading">
-        <div className="mb-4">
-          <h2
-            id="recommendations-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            What should I do this week?
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Personalized actions for {selectedField.name}
-          </p>
-        </div>
+        <h2
+          id="recommendations-heading"
+          className="font-heading text-2xl font-semibold text-foreground"
+        >
+          What should I do this week?
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          For {selectedField.name}
+        </p>
 
-        {fieldRecommendations.length === 0 ? (
-          <RecommendationsEmpty />
-        ) : (
-          <div className="space-y-4">
-            {fieldRecommendations.map((rec) => (
+        <div className="mt-5 space-y-5">
+          {recommendations.length === 0 ? (
+            <RecommendationsEmpty farmId={farmId} />
+          ) : (
+            recommendations.map((rec) => (
               <RecommendationCard key={rec.id} recommendation={rec} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* ── Section 2: How's my field doing? ── */}
-      <section aria-labelledby="field-status-heading">
-        <div className="mb-4">
-          <h2
-            id="field-status-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            How&apos;s my field doing?
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Current conditions for {selectedField.name}
-          </p>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <WeatherWidget weather={[]} />
-          <SoilWidget soil={null} />
+            ))
+          )}
         </div>
       </section>
 
-      {/* ── Section 3: Am I eligible for programs? ── */}
-      <section aria-labelledby="credits-heading">
-        <div className="mb-4">
-          <h2
-            id="credits-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            Am I eligible for programs?
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Cost-share and carbon credit programs for {farm.name}
-          </p>
+      {/* ── The record: field conditions ── */}
+      <section aria-label="Field conditions">
+        <RuleHead label="Field conditions" />
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <WeatherWidget weather={weather} />
+          <SoilWidget soil={soil} />
         </div>
+      </section>
+
+      {/* ── The record: program eligibility ── */}
+      <section aria-label="Program eligibility">
+        <RuleHead label="Program eligibility" />
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          Cost-share and carbon credit programs for {farm.name}
+        </p>
 
         {/* CSP Navigator widget — only render when data is available */}
         {cspEligibility && (
-          <div className="mb-3">
+          <div className="mt-3">
             <CspStatusWidget eligibility={cspEligibility} farmId={farmId} />
           </div>
         )}
 
-        <CreditPanel credits={credits} farmId={farmId} />
-      </section>
-
-      {/* ── Section 4: What happened recently? ── */}
-      <section aria-labelledby="activity-heading">
-        <div className="mb-4">
-          <h2
-            id="activity-heading"
-            className="font-heading text-lg font-semibold text-foreground"
-          >
-            What happened recently?
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Your last {activitySummary.recent.length} logged field activities
-          </p>
+        <div className="mt-1">
+          <CreditPanel credits={credits} farmId={farmId} />
         </div>
-        <RecentActivityWidget
-          activities={activitySummary.recent}
-          fieldNames={fieldNameMap}
-        />
+
+        {/* Next few program deadlines for this state — hidden on error */}
+        <UpcomingDeadlines deadlines={upcomingDeadlines} className="mt-6" />
       </section>
-    </div>
-  );
-}
 
-// ── Error state ───────────────────────────────────────────────────────────────
-
-function DashboardError({
-  message,
-  farmId,
-}: {
-  message: string;
-  farmId: string;
-}) {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <Card className="py-10">
-        <CardContent className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-destructive/10">
-            <AlertCircle className="h-7 w-7 text-destructive" aria-hidden="true" />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              Could not load dashboard
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              {message}
-            </p>
-          </div>
-          <div className="flex flex-col gap-2 w-full max-w-xs">
-            <Link href={`/dashboard?farm=${farmId}`}>
-              <Button className="w-full min-h-[48px] cursor-pointer">
-                Try again
-              </Button>
-            </Link>
-            <Link href="/farms">
-              <Button variant="outline" className="w-full min-h-[48px] cursor-pointer">
-                Back to farms
-              </Button>
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-// ── No farm selected ──────────────────────────────────────────────────────────
-
-function NoFarmSelected() {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground">
-          Dashboard
-        </h1>
-        <p className="mt-1 text-muted-foreground">
-          Select a farm to see your recommendations and field data.
+      {/* ── The record: what happened recently ── */}
+      <section aria-label="Recent activity">
+        <RuleHead label="Recent activity" />
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {recentActivityCopy(recentActivities.length)}
         </p>
-      </div>
-
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted">
-            <LayoutDashboard className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              No farm selected
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              Head to your farms list and tap a farm to open its dashboard with
-              recommendations, weather, and program eligibility.
-            </p>
-          </div>
-          <div className="flex flex-col gap-3 w-full max-w-xs">
-            <Link href="/farms">
-              <Button className="w-full min-h-[48px] bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer">
-                <Tractor className="mr-2 h-4 w-4" />
-                Go to My Farms
-              </Button>
-            </Link>
-            <Link href="/onboarding">
-              <Button
-                variant="outline"
-                className="w-full min-h-[48px] cursor-pointer"
-              >
-                Add a New Farm
-              </Button>
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
+        <div className="mt-3">
+          <RecentActivityWidget
+            activities={recentActivities}
+            fieldNames={fieldNameMap}
+          />
+        </div>
+      </section>
     </div>
   );
 }

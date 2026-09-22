@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/shared/page-states";
 
 export default function GlobalError({
   error,
@@ -15,14 +16,14 @@ export default function GlobalError({
   }, [error]);
 
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="font-heading text-xl font-bold">Something went wrong</h2>
-      <p className="max-w-sm text-sm text-muted-foreground">
-        An unexpected error occurred. Please try again.
-      </p>
-      <Button onClick={reset} className="min-h-[48px]">
+    <ErrorState
+      className="min-h-[60vh] justify-center"
+      title="Something went wrong"
+      message="This page hit an unexpected problem. Try again, or go back to your farms. If it keeps happening, check your internet connection."
+    >
+      <Button onClick={reset} className="min-h-12 w-full max-w-xs">
         Try again
       </Button>
-    </div>
+    </ErrorState>
   );
 }

@@ -1,12 +1,20 @@
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Sprout } from "lucide-react";
+import { LedgerRow, RuleHead, Sheet } from "@/components/shared/record";
+import { formatDate, formatNumber } from "@/lib/format";
+import { toneTextClasses, type Tone } from "@/lib/status-styles";
+import { cn } from "@/lib/utils";
 import type { SoilProfile } from "@/lib/api/types";
+
+// Organic matter at or above this percentage fills the bar.
+const ORGANIC_MATTER_FULL_PCT = 6;
+
+const BAR_FILL_CLASSES: Record<Tone, string> = {
+  accent: "bg-accent",
+  success: "bg-success",
+  warning: "bg-warning",
+  destructive: "bg-destructive",
+  info: "bg-info",
+  neutral: "bg-muted-foreground",
+};
 
 function getPhNote(ph: number): string {
   if (ph < 5.5) return "Too acidic — lime may help";
@@ -16,48 +24,48 @@ function getPhNote(ph: number): string {
   return "Too alkaline — may limit nutrients";
 }
 
+function organicMatterTone(pct: number): Tone {
+  if (pct >= 4) return "success";
+  if (pct >= 2) return "warning";
+  return "destructive";
+}
+
 function getOrganicMatterNote(pct: number): string {
   if (pct >= 4) return "Excellent — your soil is thriving";
   if (pct >= 2) return "Room for improvement — cover crops can help";
   return "Low — focus on building organic matter";
 }
 
-function OrganicMatterBar({ pct }: { pct: number }) {
-  // Cap display at 6% as "full"
-  const fillPct = Math.min((pct / 6) * 100, 100);
+/** Organic matter as a ledger line, with a flat gauge under it. */
+function OrganicMatter({ pct }: { pct: number | null }) {
+  if (pct === null) {
+    return <LedgerRow label="Organic matter" value="—" />;
+  }
 
-  let barColor = "bg-red-500";
-  if (pct >= 4) barColor = "bg-green-500";
-  else if (pct >= 2) barColor = "bg-amber-500";
-
-  let labelColor = "text-red-600";
-  if (pct >= 4) labelColor = "text-green-600";
-  else if (pct >= 2) labelColor = "text-amber-600";
+  const tone = organicMatterTone(pct);
+  const fillPct = Math.min((pct / ORGANIC_MATTER_FULL_PCT) * 100, 100);
+  const pctLabel = `${formatNumber(pct)}%`;
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">Organic matter</span>
-        <span className={`text-sm font-semibold ${labelColor}`}>
-          {pct}%
-        </span>
-      </div>
+    <div>
+      <LedgerRow
+        label="Organic matter"
+        note={getOrganicMatterNote(pct)}
+        value={<span className={toneTextClasses[tone]}>{pctLabel}</span>}
+      />
       <div
-        className="h-2.5 w-full overflow-hidden rounded-full bg-muted"
+        className="h-1.5 w-full bg-muted"
         role="progressbar"
         aria-valuenow={pct}
         aria-valuemin={0}
-        aria-valuemax={6}
-        aria-label={`Organic matter ${pct}%`}
+        aria-valuemax={ORGANIC_MATTER_FULL_PCT}
+        aria-label={`Organic matter ${pctLabel}`}
       >
         <div
-          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+          className={cn("h-full transition-all", BAR_FILL_CLASSES[tone])}
           style={{ width: `${fillPct}%` }}
         />
       </div>
-      <p className="text-xs text-muted-foreground">
-        {getOrganicMatterNote(pct)}
-      </p>
     </div>
   );
 }
@@ -72,91 +80,41 @@ export function SoilWidget({ soil }: SoilWidgetProps) {
   }
 
   return (
-    <Card>
-      <CardHeader className="border-b pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold font-heading">
-          <Sprout className="h-5 w-5 text-primary" />
-          Soil Health
-        </CardTitle>
-      </CardHeader>
+    <Sheet className="p-4">
+      <RuleHead label="Soil" />
 
-      <CardContent className="pt-4 space-y-4">
-        {/* Soil type */}
-        <div className="flex items-start justify-between gap-2">
-          <span className="text-sm text-muted-foreground">Soil type</span>
-          <span className="text-sm font-medium text-right text-foreground">
-            {soil.texture}
-          </span>
-        </div>
-
-        {/* Map unit */}
+      <div className="mt-2 divide-y divide-border">
+        <LedgerRow label="Soil type" value={soil.texture || "—"} />
         {soil.ssurgo_map_unit && (
-          <div className="flex items-start justify-between gap-2">
-            <span className="text-sm text-muted-foreground">Map unit</span>
-            <span className="text-sm font-medium text-right text-foreground max-w-[60%]">
-              {soil.ssurgo_map_unit}
-            </span>
-          </div>
+          <LedgerRow label="Map unit" value={soil.ssurgo_map_unit} />
         )}
+        <LedgerRow
+          label="Soil pH"
+          note={soil.ph !== null ? getPhNote(soil.ph) : undefined}
+          value={formatNumber(soil.ph)}
+        />
+      </div>
 
-        <div className="border-t pt-3 space-y-3">
-          {/* pH */}
-          <div className="space-y-0.5">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Soil pH</span>
-              <span className="text-sm font-semibold text-foreground">
-                {soil.ph}
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {getPhNote(soil.ph)}
-            </p>
-          </div>
+      <div className="mt-2 border-t border-border pt-1">
+        <OrganicMatter pct={soil.organic_matter_pct} />
+      </div>
 
-          {/* Organic matter progress bar */}
-          <OrganicMatterBar pct={soil.organic_matter_pct} />
-        </div>
-
-        {/* Data source note */}
-        <p className="text-xs text-muted-foreground border-t pt-2">
-          Data source: {soil.source.toUpperCase()} &middot; Updated{" "}
-          {new Date(soil.fetched_at).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-          })}
-        </p>
-      </CardContent>
-    </Card>
+      <p className="mt-4 border-t border-border pt-2 text-xs text-muted-foreground">
+        Source {soil.source.toUpperCase()} &middot; updated{" "}
+        <span className="font-mono">{formatDate(soil.fetched_at)}</span>
+      </p>
+    </Sheet>
   );
 }
 
 export function SoilWidgetEmpty() {
   return (
-    <Card>
-      <CardHeader className="border-b pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold font-heading">
-          <Sprout className="h-5 w-5 text-primary" />
-          Soil Health
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="pt-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-4 w-20" />
-          <Skeleton className="h-4 w-28" />
-        </div>
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-4 w-16" />
-          <Skeleton className="h-4 w-8" />
-        </div>
-        <div className="border-t pt-3 space-y-3">
-          <Skeleton className="h-2.5 w-full rounded-full" />
-          <Skeleton className="h-3 w-40" />
-        </div>
-        <p className="text-center text-sm text-muted-foreground pt-1">
-          We&apos;re fetching your soil data...
-        </p>
-      </CardContent>
-    </Card>
+    <Sheet className="p-4">
+      <RuleHead label="Soil" />
+      <p className="mt-3 text-sm text-muted-foreground">
+        No soil data for this field yet. It is added when the field&apos;s
+        location is looked up.
+      </p>
+    </Sheet>
   );
 }

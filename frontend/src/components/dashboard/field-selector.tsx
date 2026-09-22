@@ -8,7 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MapPin } from "lucide-react";
+import { formatAcres } from "@/lib/format";
 import type { Field } from "@/lib/api/types";
 
 interface FieldSelectorProps {
@@ -36,35 +36,40 @@ export function FieldSelector({
   const selectedField = fields.find((f) => f.id === selectedFieldId);
 
   return (
-    <div className="flex items-center gap-2">
-      <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <Select value={selectedFieldId} onValueChange={handleFieldChange}>
-        <SelectTrigger className="min-h-[48px] h-auto py-2 w-full sm:w-auto sm:min-w-[220px] text-sm">
-          <SelectValue placeholder="Select a field">
-            {selectedField ? (
-              <span>
-                {selectedField.name}
-                <span className="ml-1.5 text-muted-foreground">
-                  &middot; {selectedField.acres} ac &middot;{" "}
-                  {selectedField.crop_type}
-                </span>
+    <Select value={selectedFieldId} onValueChange={handleFieldChange}>
+      <SelectTrigger
+        aria-label="Field"
+        className="h-auto min-h-12 w-full py-2 text-sm sm:w-auto sm:min-w-[260px]"
+      >
+        <SelectValue placeholder="Select a field">
+          {selectedField ? (
+            <span>
+              <span className="font-medium">{selectedField.name}</span>
+              <span className="ml-2 text-muted-foreground">
+                <span className="font-mono">
+                  {formatAcres(selectedField.acres, { short: true })}
+                </span>{" "}
+                &middot; {selectedField.crop_type}
               </span>
-            ) : (
-              "Select a field"
-            )}
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {fields.map((field) => (
-            <SelectItem key={field.id} value={field.id}>
-              <span className="font-medium">{field.name}</span>
-              <span className="ml-1.5 text-muted-foreground text-xs">
-                {field.acres} ac &middot; {field.crop_type}
-              </span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+            </span>
+          ) : (
+            "Select a field"
+          )}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {fields.map((field) => (
+          <SelectItem key={field.id} value={field.id}>
+            <span className="font-medium">{field.name}</span>
+            <span className="ml-2 text-xs text-muted-foreground">
+              <span className="font-mono">
+                {formatAcres(field.acres, { short: true })}
+              </span>{" "}
+              &middot; {field.crop_type}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

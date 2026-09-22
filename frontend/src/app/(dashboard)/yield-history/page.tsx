@@ -3,95 +3,116 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import {
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  Plus,
-  Info,
-  Loader2,
-  AlertCircle,
-  Tractor,
-} from "lucide-react";
+import { Loader2, Plus, Wheat } from "lucide-react";
 import { YieldSummaryCard } from "@/components/activities/yield-summary-card";
-import { api } from "@/lib/api/client";
+import { ButtonLink } from "@/components/shared/button-link";
+import { RuleHead } from "@/components/shared/record";
+import {
+  EmptyState,
+  ErrorState,
+  NoFarmSelected,
+} from "@/components/shared/page-states";
+import { Button } from "@/components/ui/button";
+import { api, ApiRequestError } from "@/lib/api/client";
+import { aphToView, yieldRecordToView } from "@/lib/api/adapters";
+import { yieldUnitForCrop, type YieldUnit } from "@/lib/crops";
+import { formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { APHResult, Field, YieldRecord } from "@/lib/api/types";
+import type {
+  APHResult,
+  Field,
+  YieldHistoryRecord,
+  YieldRecord,
+} from "@/lib/api/types";
 
-// ── Simple bar chart ───────────────────────────────────────────────────────────
+const APH_FACT_SHEET_URL =
+  "https://www.rma.usda.gov/en/Fact-Sheets/National-Fact-Sheets/Actual-Production-History-APH";
+
+/**
+ * Bar fill per crop, from the chart tokens in globals.css. There are more
+ * crops than tokens, so fills repeat; the crop is named under every bar.
+ */
+const CROP_BAR_CLASSES: Record<string, string> = {
+  corn: "bg-chart-2",
+  soybeans: "bg-chart-1",
+  wheat: "bg-chart-3",
+  sorghum: "bg-soil",
+  cotton: "bg-chart-4",
+  rice: "bg-chart-5",
+  barley: "bg-chart-1",
+  oats: "bg-chart-3",
+  rye: "bg-chart-3",
+  canola: "bg-chart-2",
+  sunflower: "bg-chart-2",
+  "dry beans": "bg-chart-1",
+  peanuts: "bg-chart-4",
+  sugarbeets: "bg-chart-5",
+  "alfalfa / hay": "bg-chart-1",
+};
+
+/**
+ * The unit every record shares, or null when a field's rotation mixes crops
+ * that are not reported in the same unit (e.g. corn in bu/ac and hay in
+ * ton/ac). Callers label each figure individually when this is null.
+ */
+function sharedYieldUnit(records: YieldRecord[]): YieldUnit | null {
+  const units = new Set(records.map((r) => yieldUnitForCrop(r.crop_type)));
+  const [onlyUnit] = [...units];
+  return units.size === 1 && onlyUnit !== undefined ? onlyUnit : null;
+}
+
+// ── Yield trend ───────────────────────────────────────────────────────────────
 
 function YieldBarChart({ records }: { records: YieldRecord[] }) {
   if (records.length === 0) return null;
 
   const sorted = [...records].sort((a, b) => a.crop_year - b.crop_year);
   const maxYield = Math.max(...sorted.map((r) => r.yield_bu_ac));
-
-  const CROP_COLORS: Record<string, string> = {
-    corn: "bg-amber-400",
-    soybeans: "bg-green-500",
-    wheat: "bg-yellow-500",
-    sorghum: "bg-orange-400",
-  };
+  const unit = sharedYieldUnit(sorted);
 
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-4">
-      <p className="text-sm font-semibold text-foreground mb-4">
-        Yield trend by year
-      </p>
-      <div className="flex items-end gap-2" style={{ height: "120px" }}>
+    <div>
+      <RuleHead label={unit ? `Yield by year, ${unit}` : "Yield by year"} />
+      {unit === null && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          These years are not all reported in the same unit, so bar heights are
+          not comparable. Each year&apos;s unit is listed in the table below.
+        </p>
+      )}
+      <div className="mt-3 flex items-end gap-2 border-b border-border" style={{ height: "140px" }}>
         {sorted.map((record) => {
           const heightPct = (record.yield_bu_ac / maxYield) * 100;
           const barColor =
-            CROP_COLORS[record.crop_type.toLowerCase()] ?? "bg-primary";
+            CROP_BAR_CLASSES[record.crop_type.toLowerCase()] ?? "bg-primary";
           return (
             <div
               key={record.id}
-              className="flex flex-1 flex-col items-center gap-1"
+              className="flex h-full flex-1 flex-col items-center justify-end gap-1"
             >
-              <span className="text-sm font-bold text-foreground">
+              <span className="font-mono text-xs tabular-nums text-foreground">
                 {record.yield_bu_ac}
               </span>
               <div
-                className={cn("w-full rounded-t-md transition-all", barColor)}
+                className={cn("w-full", barColor)}
                 style={{ height: `${Math.max(heightPct, 8)}%` }}
                 role="img"
-                aria-label={`${record.crop_year}: ${record.yield_bu_ac} bu/ac ${record.crop_type}`}
+                aria-label={`${record.crop_year}: ${record.yield_bu_ac} ${yieldUnitForCrop(record.crop_type)} ${record.crop_type}`}
               />
-              <span className="text-sm text-foreground">
-                {record.crop_year}
-              </span>
-              <span
-                className={cn(
-                  "text-xs rounded px-1",
-                  record.crop_type.toLowerCase() === "corn"
-                    ? "bg-amber-100 text-amber-700"
-                    : "bg-green-100 text-green-700"
-                )}
-              >
-                {record.crop_type === "soybeans" ? "SB" : "C"}
-              </span>
             </div>
           );
         })}
       </div>
-
-      {/* Legend */}
-      <div className="mt-3 flex flex-wrap gap-3">
-        {Object.entries(CROP_COLORS)
-          .filter(([crop]) =>
-            sorted.some((r) => r.crop_type.toLowerCase() === crop)
-          )
-          .map(([crop, color]) => (
-            <div key={crop} className="flex items-center gap-1.5">
-              <div
-                className={cn("h-3 w-3 rounded-sm", color)}
-                aria-hidden="true"
-              />
-              <span className="text-xs text-muted-foreground capitalize">
-                {crop}
-              </span>
-            </div>
-          ))}
+      <div className="flex gap-2">
+        {sorted.map((record) => (
+          <div key={record.id} className="flex flex-1 flex-col items-center pt-1.5">
+            <span className="font-mono text-xs tabular-nums text-foreground">
+              {record.crop_year}
+            </span>
+            <span className="font-mono text-[0.6875rem] tracking-[0.08em] text-muted-foreground uppercase">
+              {record.crop_type}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -99,83 +120,104 @@ function YieldBarChart({ records }: { records: YieldRecord[] }) {
 
 // ── Yield table ───────────────────────────────────────────────────────────────
 
-function YieldTable({ records }: { records: YieldRecord[] }) {
+const HEAD_CELL =
+  "py-2 font-mono text-[0.6875rem] font-medium tracking-[0.14em] text-muted-foreground uppercase";
+
+function YieldTable({
+  records,
+  fieldName,
+}: {
+  records: YieldRecord[];
+  fieldName: string;
+}) {
   const sorted = [...records].sort((a, b) => b.crop_year - a.crop_year);
+  const unit = sharedYieldUnit(sorted);
 
   if (sorted.length === 0) {
     return (
-      <div className="rounded-xl border border-border bg-card px-4 py-8 text-center">
-        <p className="text-sm text-muted-foreground">No yield records yet.</p>
-      </div>
+      <p className="border-y border-border py-6 text-sm text-muted-foreground">
+        No yield records yet.
+      </p>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-card">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border bg-muted/30">
-              <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Year
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Crop
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Yield (bu/ac)
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Moisture
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Acres
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((record, i) => (
-              <tr
-                key={record.id}
-                className={cn(
-                  "border-b border-border/50 last:border-0",
-                  i % 2 === 0 ? "bg-card" : "bg-muted/10"
-                )}
-              >
-                <td className="px-4 py-3.5 font-semibold text-foreground">
-                  {record.crop_year}
-                </td>
-                <td className="px-4 py-3.5">
-                  <span
-                    className={cn(
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                      record.crop_type.toLowerCase() === "corn"
-                        ? "bg-amber-100 text-amber-700"
-                        : "bg-green-100 text-green-700"
-                    )}
-                  >
-                    {record.crop_type}
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[34rem] text-sm">
+        <thead>
+          <tr className="border-y border-border">
+            <th scope="col" className={cn(HEAD_CELL, "pr-4 text-left")}>
+              Year
+            </th>
+            <th scope="col" className={cn(HEAD_CELL, "pr-4 text-left")}>
+              Field
+            </th>
+            <th scope="col" className={cn(HEAD_CELL, "pr-4 text-left")}>
+              Crop
+            </th>
+            <th scope="col" className={cn(HEAD_CELL, "pl-4 text-right")}>
+              {unit ? `Yield ${unit}` : "Yield"}
+            </th>
+            <th scope="col" className={cn(HEAD_CELL, "pl-4 text-right")}>
+              Moisture %
+            </th>
+            <th scope="col" className={cn(HEAD_CELL, "pl-4 text-right")}>
+              Acres ac
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {sorted.map((record) => (
+            <tr key={record.id}>
+              <td className="py-2.5 pr-4 font-mono tabular-nums text-foreground">
+                {record.crop_year}
+              </td>
+              <td className="py-2.5 pr-4 text-muted-foreground">{fieldName}</td>
+              <td className="py-2.5 pr-4 text-foreground capitalize">
+                {record.crop_type}
+              </td>
+              <td className="py-2.5 pl-4 text-right font-mono font-medium tabular-nums text-foreground">
+                {record.yield_bu_ac}
+                {unit === null && (
+                  <span className="ml-1 font-normal text-muted-foreground">
+                    {yieldUnitForCrop(record.crop_type)}
                   </span>
-                </td>
-                <td className="px-4 py-3.5 text-right font-semibold text-foreground">
-                  {record.yield_bu_ac}
-                </td>
-                <td className="px-4 py-3.5 text-right text-muted-foreground">
-                  {record.moisture_pct}%
-                </td>
-                <td className="px-4 py-3.5 text-right text-muted-foreground">
-                  {record.acres.toLocaleString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                )}
+              </td>
+              <td className="py-2.5 pl-4 text-right font-mono tabular-nums text-muted-foreground">
+                {record.moisture_pct === null
+                  ? "—"
+                  : formatNumber(record.moisture_pct)}
+              </td>
+              <td className="py-2.5 pl-4 text-right font-mono tabular-nums text-muted-foreground">
+                {formatNumber(record.acres)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
+
+/** Masthead of the yield sheet. */
+function YieldHeading({ action }: { action?: React.ReactNode }) {
+  return (
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b-2 border-rule-strong pb-3">
+      <div>
+        <h1 className="font-heading text-2xl font-semibold text-foreground sm:text-3xl">
+          Yield history
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Your actual yields by year and field, and the APH they add up to.
+        </p>
+      </div>
+      {action}
+    </div>
+  );
+}
 
 export default function YieldHistoryPage() {
   const searchParams = useSearchParams();
@@ -184,7 +226,10 @@ export default function YieldHistoryPage() {
   const farmId =
     searchParams.get("farm_id") ?? searchParams.get("farm") ?? null;
 
-  const [aphResults, setAphResults] = useState<APHResult[]>([]);
+  const [recordsByField, setRecordsByField] = useState<
+    Record<string, YieldRecord[]>
+  >({});
+  const [aphByField, setAphByField] = useState<Record<string, APHResult>>({});
   const [fields, setFields] = useState<Field[]>([]);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -202,21 +247,48 @@ export default function YieldHistoryPage() {
         return;
       }
 
+      const currentFarmId: string = farmId;
+
       try {
-        const [aphData, farmFields] = await Promise.all([
-          api.activities.getYieldHistory(farmId),
-          api.fields.list(farmId),
-        ]);
+        // Yield history and APH are per field on the backend.
+        const farmFields = await api.fields.list(currentFarmId);
+        const perField = await Promise.all(
+          farmFields.map(async (f) => {
+            const [records, aph] = await Promise.all([
+              api.activities.getYieldHistory(f.id),
+              // APH returns 422 until a field has >= 4 years of yield data.
+              // Any other failure hides only the APH card, but is logged.
+              api.activities.getAPH(f.id).catch((err: unknown) => {
+                if (!(err instanceof ApiRequestError && err.code === 422)) {
+                  console.error(`YieldHistoryPage: APH failed for field ${f.id}`, err);
+                }
+                return null;
+              }),
+            ]);
+            return {
+              fieldId: f.id,
+              records: (records as YieldHistoryRecord[]).map((r) =>
+                yieldRecordToView(r, currentFarmId)
+              ),
+              aph: aph ? aphToView(aph, currentFarmId) : null,
+            };
+          })
+        );
 
         if (!cancelled) {
-          setAphResults(aphData);
+          const nextRecords: Record<string, YieldRecord[]> = {};
+          const nextAph: Record<string, APHResult> = {};
+          for (const entry of perField) {
+            nextRecords[entry.fieldId] = entry.records;
+            if (entry.aph) nextAph[entry.fieldId] = entry.aph;
+          }
+          setRecordsByField(nextRecords);
+          setAphByField(nextAph);
           setFields(farmFields);
-          // Default to first field that has APH data, else first field
-          const firstWithData = farmFields.find((f) =>
-            aphData.some((a) => a.field_id === f.id)
-          );
+          // Default to first field that has yield data, else first field
+          const firstWithData = perField.find((p) => p.records.length > 0);
           setSelectedFieldId(
-            firstWithData?.id ?? farmFields[0]?.id ?? null
+            firstWithData?.fieldId ?? farmFields[0]?.id ?? null
           );
         }
       } catch (err) {
@@ -241,38 +313,20 @@ export default function YieldHistoryPage() {
 
   // Derive data for the selected field
   const selectedField = fields.find((f) => f.id === selectedFieldId) ?? null;
-  const selectedAph =
-    aphResults.find((a) => a.field_id === selectedFieldId) ?? null;
-  const fieldRecords = selectedAph?.records ?? [];
+  const selectedAph = selectedFieldId
+    ? (aphByField[selectedFieldId] ?? null)
+    : null;
+  const fieldRecords = selectedFieldId
+    ? (recordsByField[selectedFieldId] ?? [])
+    : [];
 
   // ── No farm selected ─────────────────────────────────────────────────────────
 
   if (!farmId && !loading) {
     return (
-      <div className="pb-20 sm:pb-0 space-y-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Yield History
-        </h1>
-        <div className="rounded-xl border border-border bg-card px-6 py-12 text-center">
-          <Tractor
-            className="mx-auto mb-3 h-10 w-10 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <p className="font-heading text-base font-semibold text-foreground">
-            Select a farm to view data
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Choose a farm to see its yield history and APH calculations.
-          </p>
-          <Link href="/farms">
-            <button
-              type="button"
-              className="mt-4 min-h-[48px] rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              Go to My Farms
-            </button>
-          </Link>
-        </div>
+      <div className="pb-20 sm:pb-0">
+        <YieldHeading />
+        <NoFarmSelected description="Choose a farm to see its yield history and APH." />
       </div>
     );
   }
@@ -281,10 +335,8 @@ export default function YieldHistoryPage() {
 
   if (loading) {
     return (
-      <div className="pb-20 sm:pb-0 space-y-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Yield History
-        </h1>
+      <div className="pb-20 sm:pb-0">
+        <YieldHeading />
         <div className="flex items-center justify-center py-20">
           <Loader2
             className="h-8 w-8 animate-spin text-muted-foreground"
@@ -299,165 +351,154 @@ export default function YieldHistoryPage() {
 
   if (error) {
     return (
-      <div className="pb-20 sm:pb-0 space-y-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Yield History
-        </h1>
-        <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-6 py-10 text-center">
-          <AlertCircle
-            className="mx-auto mb-3 h-9 w-9 text-destructive"
-            aria-hidden="true"
-          />
-          <p className="font-heading text-base font-semibold text-foreground">
-            Could not load yield history
-          </p>
-          <p className="mt-1 text-sm text-muted-foreground">{error}</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="mt-4 min-h-[48px] rounded-lg border border-border px-5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-          >
+      <div className="pb-20 sm:pb-0">
+        <YieldHeading />
+        <ErrorState
+          title="Couldn't load yield history"
+          message={error}
+          actions={[]}
+        >
+          <Button variant="outline" onClick={() => window.location.reload()}>
             Try again
-          </button>
-        </div>
+          </Button>
+        </ErrorState>
       </div>
     );
   }
 
   // ── Main content ──────────────────────────────────────────────────────────────
 
+  const addYieldHref = `/activities/new?type=harvest${
+    farmId ? `&farm_id=${encodeURIComponent(farmId)}` : ""
+  }`;
+
   return (
-    <div className="pb-20 sm:pb-0 space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="pb-20 sm:pb-0">
+      <YieldHeading
+        action={
+          <ButtonLink href={addYieldHref}>
+            <Plus aria-hidden="true" />
+            Add yield record
+          </ButtonLink>
+        }
+      />
+
+      <div className="space-y-8">
+        {/* Which field the sheet is about */}
+        {fields.length > 1 && (
+          <div>
+            <RuleHead label="Viewing field" />
+            <div className="mt-2 flex flex-wrap gap-2">
+              {fields.map((field) => (
+                <button
+                  key={field.id}
+                  type="button"
+                  onClick={() => setSelectedFieldId(field.id)}
+                  aria-pressed={selectedFieldId === field.id}
+                  className={cn(
+                    "flex min-h-12 items-center gap-2 rounded-sm border px-4 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                    selectedFieldId === field.id
+                      ? "border-foreground bg-muted text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {field.name}
+                  <span className="font-mono text-xs tabular-nums opacity-80">
+                    {formatNumber(field.acres)} ac
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* APH summary */}
+        {selectedField && selectedAph ? (
+          <YieldSummaryCard
+            aph={selectedAph}
+            fieldName={selectedField.name}
+            yieldUnit={yieldUnitForCrop(selectedField.crop_type)}
+          />
+        ) : selectedField ? (
+          <div>
+            <RuleHead label={`APH — ${selectedField.name}`} />
+            <p className="mt-3 text-sm text-muted-foreground">
+              No APH for {selectedField.name} yet. APH needs at least 4 years of
+              harvest records.
+            </p>
+          </div>
+        ) : null}
+
+        {/* Yield trend */}
+        <YieldBarChart records={fieldRecords} />
+
+        {/* Year-by-year records */}
         <div>
-          <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-            Yield History
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground max-w-prose">
-            Your actual yields by year and field. Used to calculate your APH
-            for crop insurance.
-          </p>
-        </div>
-
-        <Link
-          href={`/activities/new?type=harvest${farmId ? `&farm_id=${farmId}` : ""}`}
-          className="flex min-h-[52px] items-center gap-2 rounded-xl bg-accent px-5 py-3 text-base font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <Plus className="h-5 w-5" aria-hidden="true" />
-          Add Yield Record
-        </Link>
-      </div>
-
-      {/* Field selector */}
-      {fields.length > 1 && (
-        <div className="space-y-1.5">
-          <label
-            htmlFor="field-select"
-            className="block text-sm font-medium text-muted-foreground uppercase tracking-wide"
-          >
-            View field
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {fields.map((field) => (
-              <button
-                key={field.id}
-                type="button"
-                onClick={() => setSelectedFieldId(field.id)}
-                aria-pressed={selectedFieldId === field.id}
-                className={cn(
-                  "min-h-[48px] rounded-xl border-2 px-4 py-2 text-sm font-semibold transition-all",
-                  selectedFieldId === field.id
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-card text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {field.name}
-                <span className="ml-1.5 text-xs font-normal opacity-70">
-                  {field.acres} ac
-                </span>
-              </button>
-            ))}
+          <RuleHead label="Year-by-year records" />
+          <div className="mt-3">
+            {selectedField ? (
+              <YieldTable records={fieldRecords} fieldName={selectedField.name} />
+            ) : (
+              <EmptyState
+                icon={Wheat}
+                title="No fields yet"
+                message="Add a field to this farm before recording yields."
+              />
+            )}
           </div>
         </div>
-      )}
 
-      {/* APH summary */}
-      {selectedField && selectedAph ? (
-        <YieldSummaryCard aph={selectedAph} fieldName={selectedField.name} />
-      ) : selectedField ? (
-        <div className="rounded-xl border border-border bg-card px-4 py-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            No APH data available for {selectedField.name} yet.
-          </p>
+        {/* What APH is */}
+        <div>
+          <RuleHead label="What APH is and why it matters" />
+          <div className="reading mt-3 max-w-[62ch] space-y-3 text-muted-foreground">
+            <p>
+              <strong className="text-foreground">
+                APH (Actual Production History)
+              </strong>{" "}
+              is the average yield per acre calculated from your last 4&ndash;10
+              years of harvest records. Your crop insurance company uses this
+              number to set your coverage level.
+            </p>
+            <p>
+              If you have a bad year and your actual yield drops below your
+              guarantee, you file a claim. A higher APH means a higher guarantee
+              per acre &mdash; which means a bigger payout if disaster strikes.
+            </p>
+            <p>
+              <strong className="text-foreground">
+                Every harvest you log here
+              </strong>{" "}
+              goes into your APH calculation. Accurate records protect you.
+              Missing records can lower your APH and your coverage.
+            </p>
+          </div>
+          <div className="mt-2">
+            <ButtonLink
+              href={APH_FACT_SHEET_URL}
+              external
+              variant="link"
+              className="px-0"
+              aria-label="Learn more about APH on the USDA RMA website"
+            >
+              Learn more at USDA RMA
+            </ButtonLink>
+          </div>
         </div>
-      ) : null}
 
-      {/* Bar chart */}
-      <YieldBarChart records={fieldRecords} />
-
-      {/* Year-by-year table */}
-      <div className="space-y-3">
-        <h2 className="font-heading text-lg font-semibold text-foreground">
-          Year-by-year records
-        </h2>
-        <YieldTable records={fieldRecords} />
-      </div>
-
-      {/* APH explanation */}
-      <div className="rounded-xl border border-border bg-card px-4 py-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <Info
-            className="h-4 w-4 text-primary shrink-0"
-            aria-hidden="true"
-          />
-          <h3 className="font-heading text-sm font-semibold text-foreground">
-            What is APH and why does it matter?
-          </h3>
-        </div>
-        <div className="space-y-2 text-sm text-muted-foreground leading-relaxed">
-          <p>
-            <strong className="text-foreground">
-              APH (Actual Production History)
-            </strong>{" "}
-            is the average yield per acre calculated from your last 4–10 years
-            of harvest records. Your crop insurance company uses this number to
-            set your coverage level.
-          </p>
-          <p>
-            If you have a bad year and your actual yield drops below your
-            guarantee, you file a claim. A higher APH means a higher guarantee
-            per acre — which means a bigger payout if disaster strikes.
-          </p>
-          <p>
-            <strong className="text-foreground">
-              Every harvest you log here
-            </strong>{" "}
-            goes into your APH calculation. Accurate records protect you.
-            Missing records can lower your APH and your coverage.
-          </p>
-        </div>
-        <div className="pt-1">
-          <a
-            href="https://www.rma.usda.gov/en/Fact-Sheets/National-Fact-Sheets/Actual-Production-History-APH"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-            aria-label="Learn more about APH on USDA RMA website (opens in new tab)"
+        {/* Back to the log */}
+        <div className="border-t border-border pt-4">
+          <Link
+            href={
+              farmId
+                ? `/activities?farm_id=${encodeURIComponent(farmId)}`
+                : "/activities"
+            }
+            className="inline-flex min-h-12 items-center text-sm font-medium text-primary hover:underline"
           >
-            Learn more at USDA RMA
-          </a>
+            Back to the field log
+          </Link>
         </div>
-      </div>
-
-      {/* Quick link back */}
-      <div className="text-center">
-        <Link
-          href={farmId ? `/activities?farm_id=${farmId}` : "/activities"}
-          className="text-sm font-medium text-primary hover:underline"
-        >
-          Back to Field Activity Log
-        </Link>
       </div>
     </div>
   );

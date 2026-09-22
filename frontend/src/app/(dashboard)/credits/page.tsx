@@ -1,14 +1,19 @@
 import Link from "next/link";
-import { Tractor, FileText, AlertCircle } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { EqipDetail } from "@/components/credits/eqip-detail";
 import { VcmDetail } from "@/components/credits/vcm-detail";
 import { DocumentUpload } from "@/components/credits/document-upload";
+import { ErrorState, NoFarmSelected } from "@/components/shared/page-states";
 import { api } from "@/lib/api/server-client";
 import type { Metadata } from "next";
-import type { Document, Farm, Field, CreditEligibility } from "@/lib/api/types";
+import { creditsToList, vcmEstimateFromReport } from "@/lib/api/adapters";
+import { formatAcres } from "@/lib/format";
+import type {
+  CreditEligibility,
+  CreditEligibilityGetResponse,
+  CreditReportResponse,
+  Document,
+  Farm,
+} from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "Credits & Programs — RegenAI",
@@ -30,169 +35,121 @@ export default async function CreditsPage({ searchParams }: CreditsPageProps) {
         : undefined;
 
   if (!farmId) {
-    return <NoFarmState />;
+    return (
+      <div className="pb-20 sm:pb-0">
+        <PageHeading />
+        <NoFarmSelected description="Choose a farm to see its EQIP eligibility and carbon credits." />
+      </div>
+    );
   }
 
   let farm: Farm;
-  let farmFields: Field[];
   let credits: CreditEligibility[];
   let documents: Document[];
+  let report: CreditReportResponse | null;
+
+  let creditsResp: CreditEligibilityGetResponse;
 
   try {
-    [farm, farmFields, credits, documents] = await Promise.all([
+    [farm, creditsResp, documents, report] = await Promise.all([
       api.farms.get(farmId),
-      api.fields.list(farmId),
-      api.credits.getReport(farmId),
+      api.credits.get(farmId),
       api.documents.list(farmId),
+      // The VCM estimate is one widget: on failure it falls back, the page still loads.
+      api.credits.getReport(farmId).catch((err: unknown) => {
+        console.error(`CreditsPage: credits report failed for farm ${farmId}`, err);
+        return null;
+      }),
     ]);
+    credits = creditsToList(creditsResp);
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to load credits data.";
-    return <CreditsError message={message} />;
+    return (
+      <div className="pb-20 sm:pb-0">
+        <PageHeading />
+        <ErrorState title="Couldn't load credits" message={message} />
+      </div>
+    );
   }
 
   const eqipCredit = credits.find((c) => c.program === "EQIP");
   const vcmCredit = credits.find((c) => c.program === "VCM");
 
   return (
-    <div className="pb-20 sm:pb-0 space-y-10">
-      {/* Page header */}
-      <div className="space-y-1">
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Link
-            href="/farms"
-            className="hover:text-foreground transition-colors"
-          >
+    <div className="pb-20 sm:pb-0">
+      {/* Masthead of the record */}
+      <div className="border-b-2 border-rule-strong pb-3">
+        <nav
+          aria-label="Breadcrumb"
+          className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+        >
+          <Link href="/farms" className="transition-colors hover:text-foreground">
             {farm.name}
           </Link>
           <span aria-hidden="true">&rsaquo;</span>
-          <span className="text-foreground font-medium">Credits &amp; Programs</span>
-        </div>
-        <h1 className="font-heading text-2xl font-bold text-foreground sm:text-3xl">
-          Credits &amp; Programs
+          <span className="font-medium text-foreground" aria-current="page">
+            Credits and programs
+          </span>
+        </nav>
+        <h1 className="font-heading mt-1 text-2xl font-semibold text-foreground sm:text-3xl">
+          Credits and programs
         </h1>
-        <p className="text-muted-foreground text-sm">
-          {farm.state} &middot; {farm.total_acres.toLocaleString()} total
-          acres &middot; EQIP and carbon credit tracking
+        <p className="mt-1 text-sm text-muted-foreground">
+          {farm.state} &middot;{" "}
+          <span className="font-mono tabular-nums">
+            {formatAcres(farm.total_acres, { short: true })}
+          </span>{" "}
+          total &middot; EQIP and carbon credit tracking
         </p>
       </div>
 
-      {/* EQIP Section */}
-      {eqipCredit ? (
-        <EqipDetail credit={eqipCredit} />
-      ) : (
-        <NoProgramData program="EQIP" />
-      )}
+      <div className="mt-10 space-y-12">
+        {eqipCredit ? (
+          <EqipDetail credit={eqipCredit} />
+        ) : (
+          <NoProgramData program="EQIP" />
+        )}
 
-      <Separator />
+        {vcmCredit ? (
+          <VcmDetail
+            credit={vcmCredit}
+            estimate={report ? vcmEstimateFromReport(report.vcm) : undefined}
+          />
+        ) : (
+          <NoProgramData program="VCM" />
+        )}
 
-      {/* VCM Section */}
-      {vcmCredit ? (
-        <VcmDetail credit={vcmCredit} fields={farmFields} />
-      ) : (
-        <NoProgramData program="VCM" />
-      )}
-
-      <Separator />
-
-      {/* Document upload */}
-      <DocumentUpload initialDocuments={documents} farmId={farm.id} />
+        <DocumentUpload initialDocuments={documents} farmId={farm.id} />
+      </div>
     </div>
   );
 }
 
-// ── Empty states ──────────────────────────────────────────────────────────────
+// ── Shared pieces ─────────────────────────────────────────────────────────────
+
+/** Title block for the states that load before the farm is known. */
+function PageHeading() {
+  return (
+    <div className="mb-6 border-b-2 border-rule-strong pb-3">
+      <h1 className="font-heading text-2xl font-semibold text-foreground sm:text-3xl">
+        Credits and programs
+      </h1>
+    </div>
+  );
+}
 
 function NoProgramData({ program }: { program: string }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-6 text-center space-y-2">
-      <FileText
-        className="mx-auto h-8 w-8 text-muted-foreground"
-        aria-hidden="true"
-      />
-      <p className="text-sm font-medium text-foreground">
+    <section aria-label={`${program} status`}>
+      <h2 className="font-heading text-xl font-semibold text-foreground">
         No {program} data yet
-      </p>
-      <p className="text-sm text-muted-foreground max-w-sm mx-auto leading-relaxed">
+      </h2>
+      <p className="mt-2 max-w-[62ch] text-sm leading-relaxed text-muted-foreground">
         {program === "EQIP"
           ? "Your EQIP eligibility assessment is pending. RegenAI will notify you when results are ready."
           : "Your VCM credit estimate will appear here once your practices are documented."}
       </p>
-    </div>
-  );
-}
-
-function CreditsError({ message }: { message: string }) {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground">
-          Credits &amp; Programs
-        </h1>
-      </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10">
-            <AlertCircle
-              className="h-8 w-8 text-destructive"
-              aria-hidden="true"
-            />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              Could not load credits
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              {message}
-            </p>
-          </div>
-          <Link href="/farms">
-            <Button
-              variant="outline"
-              className="min-h-[48px] cursor-pointer"
-            >
-              Back to farms
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function NoFarmState() {
-  return (
-    <div className="pb-20 sm:pb-0">
-      <div className="mb-6">
-        <h1 className="font-heading text-2xl font-bold text-foreground">
-          Credits &amp; Programs
-        </h1>
-        <p className="mt-1 text-muted-foreground">
-          Select a farm to see your program eligibility.
-        </p>
-      </div>
-      <Card className="py-12 text-center">
-        <CardContent className="flex flex-col items-center gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted">
-            <Tractor className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
-          </div>
-          <div className="max-w-sm">
-            <h2 className="font-heading text-lg font-semibold text-foreground">
-              No farm selected
-            </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">
-              Add a farm first to start tracking EQIP eligibility and carbon
-              credits.
-            </p>
-          </div>
-          <Link href="/farms">
-            <Button className="min-h-[48px] bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer">
-              <Tractor className="mr-2 h-4 w-4" aria-hidden="true" />
-              Go to My Farms
-            </Button>
-          </Link>
-        </CardContent>
-      </Card>
-    </div>
+    </section>
   );
 }

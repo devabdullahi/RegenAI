@@ -1,11 +1,10 @@
 "use client";
 
-import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
   { number: 1, label: "Welcome" },
-  { number: 2, label: "Farm Info" },
+  { number: 2, label: "Farm info" },
   { number: 3, label: "Fields" },
   { number: 4, label: "Practices" },
   { number: 5, label: "Goals" },
@@ -16,101 +15,74 @@ interface OnboardingProgressProps {
   currentStep: number;
 }
 
+/**
+ * Setup progress as the parts of a form: each step names itself over a rule,
+ * and the rule thickens under the part being filled in. Finished parts keep an
+ * ink rule; parts still to come keep a hairline.
+ */
 export function OnboardingProgress({ currentStep }: OnboardingProgressProps) {
+  const current = STEPS[currentStep - 1];
+
   return (
-    <nav
-      aria-label="Onboarding progress"
-      className="mb-8"
-    >
-      {/* Desktop: full horizontal stepper */}
-      <ol className="hidden sm:flex items-center w-full">
-        {STEPS.map((step, index) => {
+    <nav aria-label="Setup progress" className="mb-8">
+      <ol className="hidden gap-3 sm:flex">
+        {STEPS.map((step) => {
           const isCompleted = step.number < currentStep;
           const isActive = step.number === currentStep;
-          const isLast = index === STEPS.length - 1;
 
           return (
-            <li
-              key={step.number}
-              className={cn(
-                "flex items-center",
-                !isLast && "flex-1"
-              )}
-            >
-              {/* Step bubble + label */}
-              <div className="flex flex-col items-center gap-1.5">
-                <div
-                  aria-current={isActive ? "step" : undefined}
-                  className={cn(
-                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 text-sm font-semibold transition-colors duration-200",
-                    isCompleted &&
-                      "border-primary bg-primary text-primary-foreground",
-                    isActive &&
-                      "border-primary bg-primary text-primary-foreground ring-4 ring-primary/20",
-                    !isCompleted &&
-                      !isActive &&
-                      "border-border bg-card text-muted-foreground"
-                  )}
-                >
-                  {isCompleted ? (
-                    <Check className="h-4 w-4" aria-hidden="true" />
-                  ) : (
-                    <span>{step.number}</span>
-                  )}
-                </div>
-                <span
-                  className={cn(
-                    "text-xs font-medium whitespace-nowrap",
-                    isActive && "text-primary",
-                    isCompleted && "text-primary",
-                    !isActive && !isCompleted && "text-muted-foreground"
-                  )}
-                >
-                  {step.label}
-                </span>
-              </div>
-
-              {/* Connector line between steps */}
-              {!isLast && (
-                <div
-                  aria-hidden="true"
-                  className={cn(
-                    "mx-2 h-0.5 flex-1 rounded-full transition-colors duration-200",
-                    isCompleted ? "bg-primary" : "bg-border"
-                  )}
-                />
-              )}
+            <li key={step.number} className="flex-1">
+              <div
+                aria-hidden="true"
+                className={cn(
+                  "h-[3px]",
+                  isActive && "bg-primary",
+                  isCompleted && "bg-rule-strong",
+                  !isActive && !isCompleted && "bg-rule"
+                )}
+              />
+              <p
+                aria-current={isActive ? "step" : undefined}
+                className={cn(
+                  "mt-2 font-mono text-[0.6875rem] tracking-[0.1em] uppercase",
+                  isActive && "text-primary",
+                  isCompleted && "text-foreground",
+                  !isActive && !isCompleted && "text-muted-foreground"
+                )}
+              >
+                <span className="tabular-nums">
+                  {String(step.number).padStart(2, "0")}
+                </span>{" "}
+                {step.label}
+                {isCompleted ? <span className="sr-only"> (done)</span> : null}
+              </p>
             </li>
           );
         })}
       </ol>
 
-      {/* Mobile: compact "Step X of 6 — Label" indicator */}
-      <div className="flex sm:hidden items-center gap-3">
-        <div className="flex gap-1.5">
-          {STEPS.map((step) => {
-            const isCompleted = step.number < currentStep;
-            const isActive = step.number === currentStep;
-            return (
-              <div
-                key={step.number}
-                aria-hidden="true"
-                className={cn(
-                  "h-2 rounded-full transition-all duration-200",
-                  isActive && "w-6 bg-primary",
-                  isCompleted && "w-2 bg-primary",
-                  !isActive && !isCompleted && "w-2 bg-border"
-                )}
-              />
-            );
-          })}
+      {/* Phone: the same rule, one line of type. */}
+      <div className="sm:hidden">
+        <div aria-hidden="true" className="flex gap-1">
+          {STEPS.map((step) => (
+            <span
+              key={step.number}
+              className={cn(
+                "h-[3px] flex-1",
+                step.number === currentStep && "bg-primary",
+                step.number < currentStep && "bg-rule-strong",
+                step.number > currentStep && "bg-rule"
+              )}
+            />
+          ))}
         </div>
-        <span className="text-sm font-medium text-muted-foreground">
-          Step {currentStep} of {STEPS.length}
-          <span className="text-foreground">
-            {" "}— {STEPS[currentStep - 1]?.label}
-          </span>
-        </span>
+        <p className="mt-2 font-mono text-[0.6875rem] tracking-[0.12em] text-muted-foreground uppercase">
+          Step <span className="tabular-nums">{currentStep}</span> of{" "}
+          <span className="tabular-nums">{STEPS.length}</span>
+          {current ? (
+            <span className="text-foreground"> · {current.label}</span>
+          ) : null}
+        </p>
       </div>
     </nav>
   );

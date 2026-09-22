@@ -1,16 +1,34 @@
-import {
-  CheckCircle2,
-  Clock,
-  XCircle,
-  AlertTriangle,
-  ChevronRight,
-} from "lucide-react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ButtonLink } from "@/components/shared/button-link";
+import { LedgerRow, RuleHead, Sheet } from "@/components/shared/record";
+import { Badge } from "@/components/ui/badge";
+import { formatUsd } from "@/lib/format";
+import { type Tone } from "@/lib/status-styles";
+import { cn } from "@/lib/utils";
 import type { CSPEligibility, CSPEligibilityStatus } from "@/lib/api/types";
 
-// ── Status badge ──────────────────────────────────────────────────────────────
+// ── Status stamp ──────────────────────────────────────────────────────────────
+
+// Backend semantics: "act_now" = eligible AND meets the state ranking
+// threshold; ACT NOW is at state discretion, so this is "may qualify", not a
+// guarantee. "pending_review" = some but not all required concerns met.
+const STATUS_BADGE: Record<CSPEligibilityStatus, { label: string; tone: Tone }> = {
+  eligible: { label: "Eligible", tone: "success" },
+  act_now: { label: "Eligible · May qualify for ACT NOW", tone: "success" },
+  pending_review: { label: "Almost Eligible", tone: "warning" },
+  not_eligible: { label: "Not Yet Eligible", tone: "destructive" },
+};
+
+const NOT_EVALUATED_BADGE = { label: "Not Evaluated", tone: "neutral" as Tone };
+
+/** Square, mono, stamped — the status as it would be inked on a form. */
+const TONE_BADGE_CLASSES: Record<Tone, string> = {
+  accent: "border-accent bg-transparent text-accent",
+  success: "border-success bg-transparent text-success",
+  warning: "border-warning bg-transparent text-warning-foreground",
+  destructive: "border-destructive bg-transparent text-destructive",
+  info: "border-info bg-transparent text-info",
+  neutral: "border-border bg-transparent text-muted-foreground",
+};
 
 interface EligibilityBadgeProps {
   status: CSPEligibilityStatus;
@@ -21,68 +39,50 @@ export function CSPEligibilityBadge({
   status,
   large = false,
 }: EligibilityBadgeProps) {
-  const base = large
-    ? "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold"
-    : "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold";
+  const { label, tone } = STATUS_BADGE[status] ?? NOT_EVALUATED_BADGE;
 
-  if (status === "eligible") {
-    return (
-      <span className={`${base} bg-green-100 text-green-700`}>
-        <CheckCircle2
-          className={large ? "h-4 w-4" : "h-3 w-3"}
-          aria-hidden="true"
-        />
-        Eligible
-      </span>
-    );
-  }
-  if (status === "act_now") {
-    return (
-      <span className={`${base} bg-amber-100 text-amber-700`}>
-        <AlertTriangle
-          className={large ? "h-4 w-4" : "h-3 w-3"}
-          aria-hidden="true"
-        />
-        Almost Eligible
-      </span>
-    );
-  }
-  if (status === "not_eligible") {
-    return (
-      <span className={`${base} bg-red-100 text-red-700`}>
-        <XCircle
-          className={large ? "h-4 w-4" : "h-3 w-3"}
-          aria-hidden="true"
-        />
-        Not Yet Eligible
-      </span>
-    );
-  }
   return (
-    <span className={`${base} bg-muted text-muted-foreground`}>
-      <Clock
-        className={large ? "h-4 w-4" : "h-3 w-3"}
-        aria-hidden="true"
-      />
-      Not Evaluated
-    </span>
+    <Badge
+      variant="outline"
+      className={cn(
+        TONE_BADGE_CLASSES[tone],
+        large && "h-auto min-h-6 px-2 py-0.5 text-xs whitespace-normal"
+      )}
+    >
+      {label}
+    </Badge>
   );
 }
 
 // ── Status explanation text ───────────────────────────────────────────────────
 
+/** "2 of 8" when the total is known, otherwise just "2". */
+export function concernCountLabel(count: number, total: number): string {
+  return total > 0 ? `${count} of ${total}` : `${count}`;
+}
+
 function statusExplanation(
   status: CSPEligibilityStatus,
-  rcCount: number
+  rcCount: number,
+  rcTotal: number,
+  minRequired: number | undefined
 ): string {
+  const areas = `${concernCountLabel(rcCount, rcTotal)} conservation areas`;
   if (status === "eligible") {
-    return `Your farm currently meets the conservation standards in ${rcCount} out of 8 areas. You qualify to apply for a 5-year CSP contract.`;
+    return `Your farm currently meets the conservation standards in ${areas}. You qualify to apply for a CSP contract.`;
   }
   if (status === "act_now") {
-    return `Your farm meets standards in ${rcCount} out of 8 areas. You need at least 2 to be eligible. One more improvement gets you there.`;
+    return `Your farm meets the conservation standards in ${areas} and your score meets the estimated state ranking threshold. You may qualify for the ACT NOW fast-track if your state offers it. Approval is not guaranteed.`;
+  }
+  if (status === "pending_review") {
+    const need =
+      minRequired !== undefined
+        ? ` You need at least ${minRequired} to be eligible.`
+        : " You need the required number of conservation areas to be eligible.";
+    return `Your farm meets standards in ${areas}.${need}`;
   }
   if (status === "not_eligible") {
-    return `Your farm does not yet meet the minimum conservation standards. The action list below shows exactly what to work on.`;
+    return "Your farm does not yet meet the minimum conservation standards. The action list below shows exactly what to work on.";
   }
   return "We have not yet evaluated your farm for CSP eligibility. Request an evaluation to get started.";
 }
@@ -92,7 +92,7 @@ function statusExplanation(
 interface CSPEligibilityCardProps {
   eligibility: CSPEligibility;
   farmId: string;
-  /** Show the "View Details" link button */
+  /** Show the "View eligibility details" link button */
   showDetailLink?: boolean;
 }
 
@@ -104,111 +104,87 @@ export function CSPEligibilityCard({
   const {
     eligibility_status,
     rc_count_above_threshold,
+    resource_concerns_met,
+    min_concerns_required,
     estimated_annual_payment,
     act_now_eligible,
     missing_requirements,
   } = eligibility;
 
-  const borderColor =
-    eligibility_status === "eligible"
-      ? "border-green-200"
-      : eligibility_status === "act_now"
-        ? "border-amber-200"
-        : eligibility_status === "not_eligible"
-          ? "border-red-200"
-          : "border-border";
-
-  const bgColor =
-    eligibility_status === "eligible"
-      ? "bg-green-50"
-      : eligibility_status === "act_now"
-        ? "bg-amber-50"
-        : eligibility_status === "not_eligible"
-          ? "bg-red-50"
-          : "bg-muted/30";
+  const rcTotal = resource_concerns_met.length;
 
   return (
-    <Card className={`border ${borderColor}`}>
-      <CardHeader className={`rounded-t-lg ${bgColor} pb-3`}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CSPEligibilityBadge status={eligibility_status} large />
-            {act_now_eligible && (
-              <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-0.5 text-xs font-semibold text-primary-foreground">
-                <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-                ACT NOW — Instant Approval Available
-              </span>
-            )}
-          </div>
-          {estimated_annual_payment !== null &&
-            estimated_annual_payment !== undefined && (
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Estimated annual payment</p>
-                <p className="font-heading text-2xl font-bold text-primary leading-tight">
-                  ${estimated_annual_payment.toLocaleString()}
-                </p>
-                <p className="text-xs text-muted-foreground">per year</p>
-              </div>
-            )}
+    <Sheet className="space-y-4 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
+          <CSPEligibilityBadge status={eligibility_status} large />
+          {act_now_eligible && (
+            <p className="max-w-[46ch] text-sm text-foreground">
+              May qualify for ACT NOW fast-track (if your state offers it)
+            </p>
+          )}
         </div>
-      </CardHeader>
+        {estimated_annual_payment !== null &&
+          estimated_annual_payment !== undefined && (
+            <div className="text-right">
+              <p className="font-mono text-[0.6875rem] tracking-[0.14em] text-muted-foreground uppercase">
+                Estimated annual payment
+              </p>
+              <p className="font-mono text-2xl leading-tight font-medium text-foreground">
+                {formatUsd(estimated_annual_payment)}
+              </p>
+              <p className="font-mono text-xs text-muted-foreground">per year</p>
+            </div>
+          )}
+      </div>
 
-      <CardContent className="space-y-4 pt-4">
-        {/* Explanation */}
-        <p className="text-sm text-muted-foreground leading-relaxed">
-          {statusExplanation(eligibility_status, rc_count_above_threshold)}
-        </p>
+      {/* Explanation */}
+      <p className="reading max-w-[62ch] text-foreground">
+        {statusExplanation(
+          eligibility_status,
+          rc_count_above_threshold,
+          rcTotal,
+          min_concerns_required
+        )}
+      </p>
 
-        {/* RC count summary */}
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-            <span className="text-sm font-bold text-primary">
-              {rc_count_above_threshold}
-            </span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-foreground">
-              {rc_count_above_threshold} of 8 conservation areas currently met
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Minimum required: 2 areas
-            </p>
-          </div>
+      {/* Count of areas met */}
+      <div className="border-t border-rule pt-1">
+        <LedgerRow
+          label="Conservation areas currently met"
+          note={
+            min_concerns_required !== undefined
+              ? `Minimum required: ${min_concerns_required} areas`
+              : undefined
+          }
+          value={concernCountLabel(rc_count_above_threshold, rcTotal)}
+        />
+      </div>
+
+      {/* Missing requirements */}
+      {missing_requirements.length > 0 && (
+        <div className="space-y-2">
+          <RuleHead label="What you need to do next" />
+          <ul className="space-y-1.5" aria-label="Missing requirements">
+            {missing_requirements.map((req) => (
+              <li key={req} className="text-sm leading-snug text-foreground">
+                {req}
+              </li>
+            ))}
+          </ul>
         </div>
+      )}
 
-        {/* Missing requirements */}
-        {missing_requirements.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              What you need to do next
-            </p>
-            <ul className="space-y-2" aria-label="Missing requirements">
-              {missing_requirements.map((req, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm">
-                  <Clock
-                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
-                    aria-hidden="true"
-                  />
-                  <span className="text-foreground leading-snug">{req}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* CTA */}
-        {showDetailLink && (
-          <Link href={`/csp/eligibility?farm_id=${farmId}`}>
-            <Button
-              variant="outline"
-              className="w-full min-h-[48px] cursor-pointer text-primary border-primary/30 hover:bg-primary/5 hover:border-primary"
-            >
-              View Eligibility Details
-              <ChevronRight className="ml-1 h-4 w-4" aria-hidden="true" />
-            </Button>
-          </Link>
-        )}
-      </CardContent>
-    </Card>
+      {/* CTA */}
+      {showDetailLink && (
+        <ButtonLink
+          href={`/csp/eligibility?farm_id=${encodeURIComponent(farmId)}`}
+          variant="outline"
+          className="w-full"
+        >
+          View eligibility details
+        </ButtonLink>
+      )}
+    </Sheet>
   );
 }
