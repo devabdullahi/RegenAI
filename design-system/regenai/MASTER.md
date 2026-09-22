@@ -7,258 +7,140 @@
 ---
 
 **Project:** RegenAI
-**Generated:** 2026-04-02 20:16:54
-**Category:** Agriculture/Farm Tech
+**System:** Field Record (replaces the 2026-04 "Agriculture/Farm Tech" card system)
+**Revised:** 2026-09-18
+**Implemented in:** `frontend/src/app/globals.css` (tokens + component classes),
+`frontend/src/components/shared/record.tsx` (Sheet, RuleHead, LedgerRow, Stamp, EdgeNote)
 
 ---
 
-## Global Rules
+## 1. The idea
 
-### Color Palette
+RegenAI stands in for paperwork a farmer already keeps: NRCS conservation plan
+sheets, county extension bulletins, elevator scale tickets, seed tags, plat
+books. The interface borrows those conventions instead of SaaS conventions.
 
-| Role | Hex | CSS Variable | Usage |
-|------|-----|--------------|-------|
-| Primary | `#15803D` | `--color-primary` | Headers, nav, primary buttons, links |
-| On Primary | `#FFFFFF` | `--color-on-primary` | Text on primary surfaces |
-| Secondary | `#22C55E` | `--color-secondary` | Success states, progress, active fields |
-| On Secondary | `#0F172A` | `--color-on-secondary` | Text on secondary surfaces |
-| Accent | `#A16207` | `--color-accent` | Harvest gold — CTAs, badges, highlights |
-| On Accent | `#FFFFFF` | `--color-on-accent` | Text on accent surfaces |
-| Background | `#F0FDF4` | `--color-background` | Page background (light green tint) |
-| Foreground | `#14532D` | `--color-foreground` | Primary text |
-| Card | `#FFFFFF` | `--color-card` | Card backgrounds |
-| Card Foreground | `#14532D` | `--color-card-foreground` | Text on cards |
-| Muted | `#E8F0F1` | `--color-muted` | Disabled, secondary backgrounds |
-| Muted Foreground | `#64748B` | `--color-muted-foreground` | Secondary text, placeholders |
-| Border | `#BBF7D0` | `--color-border` | Borders, dividers |
-| Destructive | `#DC2626` | `--color-destructive` | Errors, delete actions |
-| On Destructive | `#FFFFFF` | `--color-on-destructive` | Text on destructive |
-| Ring | `#15803D` | `--color-ring` | Focus rings |
+What that means in practice:
 
-**Color Notes:** Earth green (#15803D) + harvest gold (#A16207). Agriculture/Farm Tech palette. Green conveys growth and trust in farming context. Gold accent for CTAs stands out against green without competing.
+- The page is a **record sheet**, not a feed of cards.
+- Structure comes from **hairline rules and small-caps section heads**, not from
+  boxes with shadows.
+- Every number is a **figure with a unit**, set in mono, aligned in a column.
+- Program codes are **stamped** (`CPS 340`, `FY2026`, `19169`), because that is
+  how they appear on the forms the farmer files.
+- Color is **structural**: green marks the farm's own record, red-orange marks
+  something with a deadline. Nothing is colored for cheer.
 
-### Typography
+## 2. Hard rules
 
-- **Heading Font:** Lexend
-- **Body Font:** Source Sans 3
-- **Mood:** trustworthy, accessible, readable, professional, clean
-- **Best For:** Enterprise, government, healthcare, agriculture — accessibility-focused
-- **Google Fonts:** [Lexend + Source Sans 3](https://fonts.google.com/share?selection.family=Lexend:wght@300;400;500;600;700|Source+Sans+3:wght@300;400;500;600;700)
-- **Tailwind Config:** `fontFamily: { heading: ['Lexend', 'sans-serif'], body: ['Source Sans 3', 'sans-serif'] }`
+**Never:**
+- shadows, gradients, glassmorphism, blur, glows
+- rounded cards as the default container (radius is 2px, everything)
+- an icon next to every heading — an icon must carry information the words do
+  not (weather condition, nav target, severity)
+- a pill-shaped badge — status is a stamp or a left edge bar
+- equal visual weight for every section — see §6
+- emoji, decorative blobs, illustrations, 3D objects
+- a figure printed without its unit
 
-**Why Lexend:** Designed specifically to improve reading proficiency. Wide letter spacing reduces cognitive load — ideal for farmers scanning recommendations quickly on a phone in the field.
+**Always:**
+- 48px minimum touch target; 16px minimum input font (set in `globals.css` base)
+- plain language: "How much CSP could pay you", not "Optimize your program ROI"
+- both themes defined from tokens; never a literal color in a component
+- `font-mono` + `tabular-nums` for acres, bushels, dollars, points, dates, codes
 
-**CSS Import:**
-```css
-@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&family=Source+Sans+3:wght@300;400;500;600;700&display=swap');
-```
+## 3. Color
 
-**Type Scale (mobile-first):**
+Tokens live in `globals.css` as OKLCH. Hex is the design reference.
+
+| Role | Light | Dark | Usage |
+|------|-------|------|-------|
+| `--background` | `#F2EDE1` manila | `#16170F` | Page ground |
+| `--card` | `#FCFAF4` | `#1F2017` | Record sheets, inputs, nav |
+| `--foreground` | `#191C17` ink | `#E8E3D2` | Text |
+| `--muted-foreground` | `#5A5F52` pencil | `#9C9885` | Labels, captions, leaders |
+| `--border` / `--rule` | `#CFC7B3` | `#37382B` | Hairlines, ledger leaders |
+| `--rule-strong` | `#191C17` | `#E8E3D2` | Heavy rule under a page title |
+| `--primary` | `#2E5E32` field green | `#83A874` | The farm's own record, primary actions |
+| `--accent` | `#B4441F` implement red | `#DE7A4E` | Deadlines, "act now", one per screen |
+| `--success` | `#3A6B3A` | `#83A874` | Met thresholds, completed steps |
+| `--warning` | `#97701A` grain amber | `#C89A3E` | Approaching cutoffs |
+| `--destructive` | `#9B2C17` barn red | `#C9563A` | Errors, restricted-use flags |
+| `--info` | `#2C4A6B` plat blue | `#71A0C4` | Neutral program notes |
+| `--soil` | `#7A5B3A` | `#B08A5E` | Soil data |
+| `--weather` | `#3A6076` slate | slate lifted | Weather data |
+
+Charts use `--chart-1..5` in that order: green, amber, soil, slate, red-orange.
+No neon, no series that only differ by lightness.
+
+## 4. Typography
+
+| Role | Face | Variable | Notes |
+|------|------|----------|-------|
+| UI + headings | **Archivo** | `--font-ui` | 600 for headings, tracking -0.015em |
+| Reading matter | **Source Serif 4** | `--font-reading` | `.reading`, 17px/1.6 — program rules, rationale |
+| Figures + codes | **IBM Plex Mono** | `--font-data` | labels, stamps, every number |
+
+Serif is not decoration: the app's job is explaining USDA rules, and that text
+is read, not scanned. Chrome (buttons, nav, labels) stays sans; figures stay
+mono. Do not set an entire page in serif.
+
 | Token | Size | Weight | Usage |
 |-------|------|--------|-------|
-| `heading-1` | 28px / 1.75rem | 700 | Page titles |
-| `heading-2` | 22px / 1.375rem | 600 | Section titles |
-| `heading-3` | 18px / 1.125rem | 600 | Card titles |
-| `body` | 16px / 1rem | 400 | Body text (minimum for mobile) |
-| `body-lg` | 18px / 1.125rem | 400 | Recommendation text, important reads |
-| `label` | 14px / 0.875rem | 500 | Form labels, metadata |
-| `caption` | 12px / 0.75rem | 400 | Timestamps, fine print only |
+| Page title | 28–32px | 600 Archivo | One per page, above a strong rule |
+| Section head | 11px | 500 mono, `.rule-head` / `RuleHead` | Uppercase, 0.14em tracking |
+| Card/record title | 16px | 600 Archivo | |
+| Body | 16px | 400 Archivo | UI copy |
+| Reading | 17px | 400 Source Serif | `.reading`, max ~62ch |
+| Figure | 14–28px | 500 mono | Always with unit |
+| Caption | 12px | 400 | Sources, as-of dates |
 
-### Spacing Variables
+## 5. Components
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--space-xs` | `4px` / `0.25rem` | Tight gaps |
-| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |
-| `--space-md` | `16px` / `1rem` | Standard padding |
-| `--space-lg` | `24px` / `1.5rem` | Section padding |
-| `--space-xl` | `32px` / `2rem` | Large gaps |
-| `--space-2xl` | `48px` / `3rem` | Section margins |
-| `--space-3xl` | `64px` / `4rem` | Hero padding |
+**Sheet** — `<Sheet>`: 1px border, `bg-card`, 2px radius, no shadow. Holds a
+section. Sections are separated by space and rules, not by stacked boxes.
 
-### Shadow Depths
+**RuleHead** — `<RuleHead label="Resource concerns" action={…}/>`: small-caps
+mono label, hairline to the end of the measure, optional action past the rule.
+This replaces most card headers.
 
-| Level | Value | Usage |
-|-------|-------|-------|
-| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)` | Subtle lift |
-| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)` | Cards, buttons |
-| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)` | Modals, dropdowns |
-| `--shadow-xl` | `0 20px 25px rgba(0,0,0,0.15)` | Hero images, featured cards |
+**LedgerRow** — `<LedgerRow label="Total acres" value="480.0 ac" />`: label,
+dotted leader, mono figure. The default way to present any label/value pair.
+Stack them; do not put each in its own box.
 
----
+**Stamp** — `<Stamp>CPS 340</Stamp>`: boxed mono code. For practice codes,
+fiscal years, FIPS, document types.
 
-## Component Specs
+**EdgeNote** — `<EdgeNote tone="warning" title="Sign-up closes Mar 21">`: 3px
+left bar in the tone color on ordinary paper. Replaces tinted alert cards.
 
-### Buttons
+**Buttons** — square (2px), sans, medium. `default` = green (do the farm's
+work), `accent` = red-orange (deadline-bound), `outline` = secondary,
+`ghost` = tertiary, `link` = inline. Sizes: `lg` 48px for primary page actions,
+`default` 44px, `sm` 36px for inline actions. One primary per view.
 
-```css
-/* Primary Button — harvest gold CTA */
-.btn-primary {
-  background: #A16207;
-  color: white;
-  padding: 14px 28px;        /* Extra-large for work-glove taps */
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 16px;
-  min-height: 48px;           /* Meets 48dp Material touch target */
-  transition: all 200ms ease;
-  cursor: pointer;
-}
+**Inputs** — ruled box on `bg-card`, 48px tall, 2px radius. Labels are mono
+small caps above the blank. Helper text sits under the input at 12px.
 
-.btn-primary:hover {
-  background: #854d0e;
-  transform: translateY(-1px);
-}
+## 6. Density and hierarchy
 
-/* Secondary Button — earth green outline */
-.btn-secondary {
-  background: transparent;
-  color: #15803D;
-  border: 2px solid #15803D;
-  padding: 14px 28px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 16px;
-  min-height: 48px;
-  transition: all 200ms ease;
-  cursor: pointer;
-}
+Not every section is equal, and the page should show it.
 
-/* Green filled button (for positive actions like "Mark as Done") */
-.btn-success {
-  background: #15803D;
-  color: white;
-  padding: 14px 28px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 16px;
-  min-height: 48px;
-  transition: all 200ms ease;
-  cursor: pointer;
-}
-```
+- **Decisions get room**: "What to do this week", recommendation rationale —
+  serif, generous leading, wide measure.
+- **Records get density**: activity log, yield history, resource concerns,
+  payment lines — tight rows, mono figures, hairline dividers, no padding
+  inflation. A farmer comparing 8 concerns wants them in one glance.
+- **One page title, one primary action, one accent** per screen. If everything
+  is emphasized, nothing is.
 
-### Farmer-Specific UI Rules
+## 7. Accessibility
 
-```
-CRITICAL — These override general UX patterns for this product:
-
-1. TOUCH TARGETS: Min 48x48px everywhere. Farmers wear work gloves.
-2. FONT SIZE: Never below 16px for any interactive or readable text.
-3. LANGUAGE: Plain English only. "Your soil needs more cover" not "SOC sequestration suboptimal."
-4. PROGRESSIVE DISCLOSURE: Show the #1 action first. Details behind a tap.
-5. NEXT ACTION: Every screen must answer "What do I do next?" with a visible CTA.
-6. LOADING: Always show skeleton/spinner. Farmers on rural cellular (3G/4G).
-7. OFFLINE TOLERANCE: Cache last-known data. Show "Last updated: [date]" when stale.
-8. FIELD WIDTH: Max 375px for all critical flows (iPhone SE baseline).
-9. NO JARGON: Avoid "EQIP" without "(cost-share program)" on first use per page.
-10. ONE COLUMN: Mobile forms are single-column only. No side-by-side inputs.
-```
-
-### Cards
-
-```css
-.card {
-  background: #F8FAFC;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: var(--shadow-md);
-  transition: all 200ms ease;
-  cursor: pointer;
-}
-
-.card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-}
-```
-
-### Inputs
-
-```css
-.input {
-  padding: 12px 16px;
-  border: 1px solid #E2E8F0;
-  border-radius: 8px;
-  font-size: 16px;
-  transition: border-color 200ms ease;
-}
-
-.input:focus {
-  border-color: #15803D;
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(21, 128, 61, 0.15);
-}
-```
-
-### Modals
-
-```css
-.modal-overlay {
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-}
-
-.modal {
-  background: white;
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow-xl);
-  max-width: 500px;
-  width: 90%;
-}
-```
-
----
-
-## Style Guidelines
-
-**Style:** Organic Biophilic
-
-**Keywords:** Nature, organic shapes, green, sustainable, rounded, flowing, wellness, earthy, natural textures
-
-**Best For:** Wellness apps, sustainability brands, eco products, health apps, meditation, organic food brands
-
-**Key Effects:** Rounded corners (16-24px), organic curves (border-radius variations), natural shadows, flowing SVG shapes
-
-### Page Pattern
-
-**Pattern Name:** Real-Time / Operations Landing
-
-- **Conversion Strategy:** For ops/security/iot products. Demo or sandbox link. Trust signals.
-- **CTA Placement:** Primary CTA in nav + After metrics
-- **Section Order:** 1. Hero (product + live preview or status), 2. Key metrics/indicators, 3. How it works, 4. CTA (Start trial / Contact)
-
----
-
-## Anti-Patterns (Do NOT Use)
-
-- ❌ Generic design
-- ❌ Ignored accessibility
-- ❌ AI purple/pink gradients
-
-### Additional Forbidden Patterns
-
-- ❌ **Emojis as icons** — Use SVG icons (Heroicons, Lucide, Simple Icons)
-- ❌ **Missing cursor:pointer** — All clickable elements must have cursor:pointer
-- ❌ **Layout-shifting hovers** — Avoid scale transforms that shift layout
-- ❌ **Low contrast text** — Maintain 4.5:1 minimum contrast ratio
-- ❌ **Instant state changes** — Always use transitions (150-300ms)
-- ❌ **Invisible focus states** — Focus states must be visible for a11y
-
----
-
-## Pre-Delivery Checklist
-
-Before delivering any UI code, verify:
-
-- [ ] No emojis used as icons (use SVG instead)
-- [ ] All icons from consistent icon set (Heroicons/Lucide)
-- [ ] `cursor-pointer` on all clickable elements
-- [ ] Hover states with smooth transitions (150-300ms)
-- [ ] Light mode: text contrast 4.5:1 minimum
-- [ ] Focus states visible for keyboard navigation
-- [ ] `prefers-reduced-motion` respected
-- [ ] Responsive: 375px, 768px, 1024px, 1440px
-- [ ] No content hidden behind fixed navbars
-- [ ] No horizontal scroll on mobile
+- 48px targets, 16px inputs (enforced in base layer).
+- Text contrast ≥ 4.5:1 on paper in both themes; `--warning` and `--accent` are
+  dark enough for body text on light paper, and are lifted in dark.
+- Focus: 2px ring in `--ring` with 2px offset. Never remove it.
+- Status never relies on color alone: the word is always present next to the
+  bar or stamp.
+- Respect `prefers-reduced-motion` (handled globally). Transitions are color
+  only; nothing floats, fades in on scroll, or animates on load.
