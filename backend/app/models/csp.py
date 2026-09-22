@@ -321,6 +321,10 @@ class CSPEligibilityResponse(BaseModel):
     )
     scoring_rules: CSPScoringRulesMetadata
     evaluated_at: datetime
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal problems, e.g. the assessment could not be saved.",
+    )
 
 
 class CSPEnhancementsResponse(BaseModel):
