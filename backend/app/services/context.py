@@ -9,7 +9,63 @@ farm_id to enforce data isolation.
 import logging
 from datetime import datetime, timezone
 
+from postgrest.exceptions import APIError
+
+from app.services.csp_eligibility import fetch_latest_assessment
+from app.services.weather import FORECAST_DAYS
+
 logger = logging.getLogger(__name__)
+
+# Columns of csp_eligibility_assessments that csp_eligibility actually writes.
+# resource_concerns_met holds the full csp_scoring result (per-concern scores
+# and the state ranking threshold used for the evaluation).
+_ASSESSMENT_COLUMNS = (
+    "eligibility_status, fiscal_year, rc_count_above_threshold, stewardship_score, "
+    "act_now_eligible, resource_concerns_met, active_enhancement_codes, notes, "
+    "evaluated_at"
+)
+
+
+def _summarize_assessment(row: dict) -> dict:
+    """Reduce a csp_eligibility_assessments row to the fields the prompt uses.
+
+    Values that are absent stay None so the prompt omits them instead of
+    substituting a default.
+    """
+    score_detail = row.get("resource_concerns_met")
+    if not isinstance(score_detail, dict):
+        score_detail = {}
+
+    resource_concerns = [
+        {
+            "name": concern.get("name") or concern.get("concern_id", ""),
+            "points_earned": concern.get("points_earned"),
+            "points_possible": concern.get("points_possible"),
+            "meets_threshold": bool(concern.get("meets_threshold")),
+        }
+        for concern in score_detail.get("resource_concern_scores") or []
+        if isinstance(concern, dict)
+    ]
+
+    return {
+        "eligibility_status": row.get("eligibility_status"),
+        "fiscal_year": row.get("fiscal_year"),
+        "stewardship_score": row.get("stewardship_score"),
+        "max_possible_points": score_detail.get("max_possible_points"),
+        "rc_count_above_threshold": row.get("rc_count_above_threshold"),
+        # The act_now_eligible column is NOT NULL, so it cannot express "the
+        # state's ranking threshold is unknown". The score payload can, and
+        # takes precedence: None there keeps the line out of the prompt
+        # instead of asserting the farm missed a cut-off we do not have.
+        "act_now_eligible": score_detail.get(
+            "meets_ranking_threshold", row.get("act_now_eligible")
+        ),
+        "state_ranking_threshold": score_detail.get("state_ranking_threshold"),
+        "resource_concerns": resource_concerns,
+        "gap_closure_activity_codes": row.get("active_enhancement_codes") or [],
+        "notes": row.get("notes"),
+        "evaluated_at": row.get("evaluated_at"),
+    }
 
 
 async def assemble_farm_context(farm_id: str, supabase) -> dict:
@@ -24,10 +80,10 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
 
     Returns:
         A dict containing farm profile, fields, soil profiles, weather data,
-        current practices, acted recommendations, and valid EQIP practice
-        codes.  Missing data sections are returned as empty lists/dicts
-        with a warning entry so the prompt builder can communicate gaps to
-        the LLM.
+        current practices, acted recommendations, valid EQIP practice codes,
+        and the latest CSP assessment summary.  Missing data sections are
+        returned as empty lists (or None) with a warning entry so the prompt
+        builder can communicate gaps to the LLM.
 
     Raises:
         ValueError: If the farm cannot be found.
@@ -46,9 +102,9 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
             .execute()
         )
         farm = farm_result.data
-    except Exception:
-        logger.exception("Failed to fetch farm=%s", farm_id)
-        raise ValueError(f"Farm {farm_id} not found or inaccessible")
+    except APIError as exc:
+        logger.error("Failed to fetch farm=%s: %s", farm_id, exc)
+        raise ValueError(f"Farm {farm_id} not found or inaccessible") from exc
 
     if not farm:
         raise ValueError(f"Farm {farm_id} not found or inaccessible")
@@ -64,8 +120,8 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
             .execute()
         )
         fields = fields_result.data or []
-    except Exception:
-        logger.exception("Failed to fetch fields for farm=%s", farm_id)
+    except APIError as exc:
+        logger.error("Failed to fetch fields for farm=%s: %s", farm_id, exc)
         fields = []
         warnings.append("Could not fetch fields")
 
@@ -94,8 +150,8 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
                 if fid not in seen_fields:
                     soil_profiles.append(row)
                     seen_fields.add(fid)
-        except Exception:
-            logger.exception("Failed to fetch soil profiles for farm=%s", farm_id)
+        except APIError as exc:
+            logger.error("Failed to fetch soil profiles for farm=%s: %s", farm_id, exc)
             warnings.append("Could not fetch soil profiles")
 
     if not soil_profiles:
@@ -112,12 +168,14 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
                 .select("*")
                 .in_("field_id", field_ids)
                 .order("date", desc=True)
-                .limit(50)  # 7 days * ~7 fields max = 49
+                # One forecast per field is cached; scale the row limit with the
+                # number of fields so larger farms are not truncated.
+                .limit(FORECAST_DAYS * len(field_ids))
                 .execute()
             )
             weather_data = weather_result.data or []
-        except Exception:
-            logger.exception("Failed to fetch weather cache for farm=%s", farm_id)
+        except APIError as exc:
+            logger.error("Failed to fetch weather cache for farm=%s: %s", farm_id, exc)
             warnings.append("Could not fetch weather data")
 
     if not weather_data:
@@ -147,9 +205,9 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
                 .execute()
             )
             acted_recommendations = acted_result.data or []
-        except Exception:
-            logger.exception(
-                "Failed to fetch acted recommendations for farm=%s", farm_id
+        except APIError as exc:
+            logger.error(
+                "Failed to fetch acted recommendations for farm=%s: %s", farm_id, exc
             )
             warnings.append("Could not fetch recommendation history")
 
@@ -164,8 +222,8 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
             .execute()
         )
         eqip_practices = eqip_result.data or []
-    except Exception:
-        logger.exception("Failed to fetch EQIP practices")
+    except APIError as exc:
+        logger.error("Failed to fetch EQIP practices for farm=%s: %s", farm_id, exc)
         warnings.append("Could not fetch EQIP practice reference data")
 
     # ------------------------------------------------------------------
@@ -173,20 +231,13 @@ async def assemble_farm_context(farm_id: str, supabase) -> dict:
     # ------------------------------------------------------------------
     csp_assessment: dict | None = None
     try:
-        csp_result = (
-            supabase.table("csp_eligibility_assessments")
-            .select(
-                "eligibility_status, rc_count_above_threshold, stewardship_score, "
-                "notes, act_now_eligible, evaluated_at"
-            )
-            .eq("farm_id", farm_id)
-            .single()
-            .execute()
-        )
-        if csp_result.data:
-            csp_assessment = csp_result.data
-    except Exception:
-        logger.warning("Could not fetch CSP assessment for farm=%s", farm_id)
+        assessment_row = fetch_latest_assessment(supabase, farm_id, _ASSESSMENT_COLUMNS)
+    except APIError as exc:
+        logger.warning("Could not fetch CSP assessment for farm=%s: %s", farm_id, exc)
+        warnings.append("Could not fetch CSP assessment")
+    else:
+        if assessment_row:
+            csp_assessment = _summarize_assessment(assessment_row)
 
     # ------------------------------------------------------------------
     # 9. Assemble the context dict

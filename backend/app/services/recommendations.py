@@ -2,144 +2,122 @@
 LLM recommendation service for RegenAI.
 
 Orchestrates the full pipeline: context assembly -> prompt building ->
-Claude API call -> output validation -> hallucination guard -> persistence.
+LLM (DeepSeek) API call -> output validation -> hallucination guard -> persistence.
 """
 
 import json
 import logging
-from datetime import datetime, timezone
 
-import anthropic
+import openai
+from postgrest.exceptions import APIError
+from pydantic import ValidationError
 
 from app.config import settings
 from app.services.context import assemble_farm_context
 from app.services.prompts import RECOMMENDATION_SYSTEM_PROMPT, build_user_message
 from app.services.validators import (
     LLMRecommendation,
-    LLMRecommendationList,
     validate_field_ids,
     validate_practice_codes,
 )
 
 logger = logging.getLogger(__name__)
 
-# Shared Anthropic client — created once per process, not per request.
-_anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+# Shared DeepSeek client (OpenAI-compatible API) — created once per process, not per request.
+_llm_client = openai.AsyncOpenAI(
+    api_key=settings.deepseek_api_key,
+    base_url=settings.deepseek_base_url,
+)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Claude model to use for recommendation generation.
-_MODEL = "claude-sonnet-4-20250514"
-
-# Maximum tokens for the recommendation response. 3-6 recommendations in JSON
-# typically requires 1500-2500 tokens; we allow headroom.
-_MAX_TOKENS = 4096
-
-# Temperature: low for structured/factual output, slight variation for
-# diversity across runs.
-_TEMPERATURE = 0.3
-
-# Maximum retry attempts on malformed LLM output before returning empty.
+# Extra attempts after the first when the LLM's output is malformed. API errors
+# (connection, rate limit, status) are not retried here; they propagate.
 _MAX_RETRIES = 1
+
+
+class RecommendationOutputError(RuntimeError):
+    """The LLM responded, but no attempt produced a usable recommendation list."""
 
 
 # ---------------------------------------------------------------------------
 # LLM call
 # ---------------------------------------------------------------------------
 
-async def _call_claude(system_prompt: str, user_message: str) -> str | None:
-    """Call the Anthropic messages API and return the text response.
+async def _call_llm(system_prompt: str, user_message: str) -> str | None:
+    """Call the DeepSeek chat completions API and return the text response.
 
-    Returns None if the API call fails or returns no content.
+    Returns None if the response has no choices or empty content (treated as
+    malformed output by the caller).
+
+    Raises:
+        openai.APIError: Connection, rate-limit and status errors are logged
+            and re-raised so the router can map them to 503/502/500.
     """
     try:
-        message = await _anthropic_client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS,
-            temperature=_TEMPERATURE,
-            system=system_prompt,
+        completion = await _llm_client.chat.completions.create(
+            model=settings.deepseek_model,
+            max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
             messages=[
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
+            # Thinking mode is DeepSeek's default, and it ignores temperature and
+            # puts reasoning in a separate field. We want a deterministic bare JSON
+            # array in `content`, so thinking is disabled explicitly.
+            extra_body={"thinking": {"type": "disabled"}},
         )
+    except openai.APIError as exc:
+        logger.error("LLM API call failed: %s: %s", type(exc).__name__, str(exc)[:200])
+        raise
 
-        # Extract text from the response content blocks
-        text_parts = [
-            block.text
-            for block in message.content
-            if hasattr(block, "text")
-        ]
+    if not completion.choices:
+        logger.warning("LLM returned no choices")
+        return None
 
-        if not text_parts:
-            logger.warning("Claude returned no text content blocks")
-            return None
+    choice = completion.choices[0]
+    finish_reason = choice.finish_reason
+    # A truncated "length" reply is not rescued: it fails strict parsing and the
+    # caller's retry loop handles it.
+    if finish_reason != "stop":
+        logger.warning("LLM finish_reason=%s (expected stop)", finish_reason)
 
-        raw_text = "\n".join(text_parts).strip()
-        logger.info(
-            "Claude response received: %d chars, stop_reason=%s",
-            len(raw_text),
-            message.stop_reason,
-        )
-        return raw_text
+    content = choice.message.content
+    if not content or not content.strip():
+        logger.warning("LLM returned no text content (finish_reason=%s)", finish_reason)
+        return None
 
-    except anthropic.APIConnectionError:
-        logger.error("Failed to connect to Anthropic API")
-        return None
-    except anthropic.RateLimitError:
-        logger.error("Anthropic API rate limit exceeded")
-        return None
-    except anthropic.APIStatusError as exc:
-        logger.error(
-            "Anthropic API error: status=%d message=%s",
-            exc.status_code,
-            str(exc)[:200],
-        )
-        return None
-    except Exception:
-        logger.exception("Unexpected error calling Claude API")
-        return None
+    raw_text = content.strip()
+    logger.info(
+        "LLM response received: %d chars, finish_reason=%s",
+        len(raw_text),
+        finish_reason,
+    )
+    return raw_text
 
 
 # ---------------------------------------------------------------------------
-# JSON parsing with cleanup
+# Strict JSON parsing
 # ---------------------------------------------------------------------------
 
-def _parse_llm_json(raw_text: str) -> list[dict] | None:
-    """Parse the LLM's raw text output into a list of dicts.
+def _parse_llm_json(raw_text: str) -> list | None:
+    """Parse the LLM's raw text output into a list.
 
-    Handles common LLM quirks: markdown code fences, leading prose, trailing
-    text after the JSON array.
-
-    Returns None if parsing fails.
+    The only accepted shape is a bare JSON array (surrounding whitespace is
+    trimmed). The system prompt forbids code fences, so everything else is
+    rejected with None, which triggers a retry: code fences of any kind, prose
+    around the JSON, or a wrapping object such as {"recommendations": [...]}.
+    We asked for a bare array and do not rescue other shapes.
     """
     text = raw_text.strip()
 
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        # Remove opening fence (with optional language tag)
-        first_newline = text.index("\n") if "\n" in text else 3
-        text = text[first_newline + 1:]
-        # Remove closing fence
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
-    # Find the JSON array boundaries
-    start = text.find("[")
-    end = text.rfind("]")
-
-    if start == -1 or end == -1 or end <= start:
-        logger.warning("Could not find JSON array in LLM output")
+    if "```" in text:
+        logger.warning("LLM output contains a code fence; a bare JSON array was required")
         return None
 
-    json_str = text[start:end + 1]
-
     try:
-        parsed = json.loads(json_str)
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        logger.warning("JSON parse error: %s", exc)
+        logger.warning("LLM output is not a bare JSON array: %s", exc)
         return None
 
     if not isinstance(parsed, list):
@@ -153,8 +131,8 @@ def _parse_llm_json(raw_text: str) -> list[dict] | None:
 # Pydantic validation
 # ---------------------------------------------------------------------------
 
-def _validate_recommendations(raw_list: list[dict]) -> list[LLMRecommendation]:
-    """Validate a list of raw dicts against the LLMRecommendation schema.
+def _validate_recommendations(raw_list: list) -> list[LLMRecommendation]:
+    """Validate a list of raw items against the LLMRecommendation schema.
 
     Individual items that fail validation are logged and skipped rather than
     failing the entire batch.
@@ -163,9 +141,8 @@ def _validate_recommendations(raw_list: list[dict]) -> list[LLMRecommendation]:
 
     for i, item in enumerate(raw_list):
         try:
-            rec = LLMRecommendation.model_validate(item)
-            validated.append(rec)
-        except Exception as exc:
+            validated.append(LLMRecommendation.model_validate(item))
+        except ValidationError as exc:
             logger.warning(
                 "Recommendation #%d failed validation: %s — item: %r",
                 i,
@@ -188,25 +165,26 @@ def _validate_recommendations(raw_list: list[dict]) -> list[LLMRecommendation]:
 def _store_recommendations(
     supabase,
     recommendations: list[LLMRecommendation],
+    farm_id: str,
     status: str = "pending",
 ) -> list[dict]:
     """Insert validated recommendations into the recommendations table.
 
-    Args:
-        supabase: Supabase client instance.
-        recommendations: Validated LLMRecommendation objects.
-        status: Status to assign. 'pending' for valid, could be extended.
-
     Returns:
         List of inserted row dicts from Supabase (including generated id and
         created_at).
+
+    Raises:
+        APIError: If the insert fails. Generated recommendations that cannot
+            be saved must not be reported as a success.
     """
     if not recommendations:
         return []
 
     rows = [
         {
-            "field_id": rec.field_id,
+            # The Supabase client cannot JSON-serialize UUID objects.
+            "field_id": str(rec.field_id),
             "practice_code": rec.practice_code,
             "title": rec.title,
             "rationale": rec.rationale,
@@ -218,12 +196,15 @@ def _store_recommendations(
 
     try:
         result = supabase.table("recommendations").insert(rows).execute()
-        stored = result.data or []
-        logger.info("Stored %d recommendations", len(stored))
-        return stored
-    except Exception:
-        logger.exception("Failed to store recommendations")
-        return []
+    except APIError as exc:
+        logger.error(
+            "Failed to store %d recommendations for farm=%s: %s", len(rows), farm_id, exc
+        )
+        raise
+
+    stored = result.data or []
+    logger.info("Stored %d recommendations for farm=%s", len(stored), farm_id)
+    return stored
 
 
 # ---------------------------------------------------------------------------
@@ -239,31 +220,32 @@ async def generate_recommendations(
     Pipeline steps:
       1. Assemble farm context from database
       2. Build prompt from template
-      3. Call Claude API
+      3. Call the LLM (DeepSeek) API
       4. Parse and validate JSON output with Pydantic
       5. Run hallucination guard (practice codes + field IDs)
       6. Store valid recommendations in the database
       7. Return the stored recommendations
 
-    On LLM failure or malformed output, retries once. If both attempts fail,
-    returns an empty list with a warning logged.
+    Malformed output is retried once. API errors are not retried.
 
     Args:
-        farm_id: UUID of the farm to generate recommendations for.
+        farm_id: UUID string of the farm to generate recommendations for.
         supabase: An authenticated Supabase client instance.
 
     Returns:
-        A list of recommendation dicts as stored in the database, or an
-        empty list if generation failed.
+        The recommendation rows as stored in the database. Empty when the farm
+        has no fields or every recommendation was rejected by the guards.
+
+    Raises:
+        ValueError: The farm was not found or is not accessible.
+        openai.APIError: The LLM API call failed.
+        RecommendationOutputError: Every attempt produced unusable output.
+        APIError: Storing the recommendations failed.
     """
     # ------------------------------------------------------------------
-    # Step 1: Assemble context
+    # Step 1: Assemble context (ValueError propagates for a missing farm)
     # ------------------------------------------------------------------
-    try:
-        context = await assemble_farm_context(farm_id, supabase)
-    except ValueError as exc:
-        logger.error("Context assembly failed for farm=%s: %s", farm_id, exc)
-        return []
+    context = await assemble_farm_context(farm_id, supabase)
 
     # Extract valid codes and field IDs for the hallucination guard
     valid_practice_codes: set[str] = {
@@ -283,7 +265,7 @@ async def generate_recommendations(
     user_message = build_user_message(context)
 
     # ------------------------------------------------------------------
-    # Steps 3-4: Call Claude and parse output (with retry)
+    # Steps 3-4: Call the LLM and parse output (retry malformed output)
     # ------------------------------------------------------------------
     validated_recs: list[LLMRecommendation] = []
     attempts = 0
@@ -291,19 +273,17 @@ async def generate_recommendations(
     while attempts <= _MAX_RETRIES:
         attempts += 1
         logger.info(
-            "Calling Claude for farm=%s (attempt %d/%d)",
+            "Calling LLM for farm=%s (attempt %d/%d)",
             farm_id,
             attempts,
             _MAX_RETRIES + 1,
         )
 
-        raw_text = await _call_claude(RECOMMENDATION_SYSTEM_PROMPT, user_message)
+        raw_text = await _call_llm(RECOMMENDATION_SYSTEM_PROMPT, user_message)
 
         if raw_text is None:
             logger.warning(
-                "Claude API returned no output for farm=%s (attempt %d)",
-                farm_id,
-                attempts,
+                "LLM returned no text for farm=%s (attempt %d)", farm_id, attempts
             )
             continue
 
@@ -311,7 +291,7 @@ async def generate_recommendations(
 
         if parsed is None:
             logger.warning(
-                "Failed to parse JSON from Claude output for farm=%s (attempt %d)",
+                "Rejected malformed LLM output for farm=%s (attempt %d)",
                 farm_id,
                 attempts,
             )
@@ -321,20 +301,20 @@ async def generate_recommendations(
 
         if validated_recs:
             break
-        else:
-            logger.warning(
-                "No recommendations passed validation for farm=%s (attempt %d)",
-                farm_id,
-                attempts,
-            )
+
+        logger.warning(
+            "No recommendations passed validation for farm=%s (attempt %d)",
+            farm_id,
+            attempts,
+        )
 
     if not validated_recs:
         logger.error(
-            "All %d attempts to generate recommendations failed for farm=%s",
-            attempts,
-            farm_id,
+            "All %d attempts produced unusable output for farm=%s", attempts, farm_id
         )
-        return []
+        raise RecommendationOutputError(
+            f"LLM produced no valid recommendations after {attempts} attempts"
+        )
 
     # ------------------------------------------------------------------
     # Step 5: Hallucination guards
@@ -357,26 +337,16 @@ async def generate_recommendations(
         valid_by_field, valid_practice_codes
     )
 
-    if flagged_by_code:
-        logger.warning(
-            "%d recommendations had unknown practice codes for farm=%s",
-            len(flagged_by_code),
-            farm_id,
-        )
-
     # ------------------------------------------------------------------
     # Step 6: Store results
     # ------------------------------------------------------------------
+    stored = _store_recommendations(supabase, valid_by_code, farm_id, status="pending")
 
-    # Store valid recommendations as 'pending'
-    stored = _store_recommendations(supabase, valid_by_code, status="pending")
-
-    # Store flagged-by-code recommendations as 'pending' but log them;
-    # in the future these could go to a review queue. For now, we skip them
-    # to avoid showing potentially hallucinated practices to farmers.
+    # Recommendations with unverified practice codes are dropped, not stored,
+    # so farmers never see a practice that is not in eqip_practices.
     if flagged_by_code:
-        logger.info(
-            "Skipped %d recommendations with unverified practice codes for farm=%s: %s",
+        logger.warning(
+            "Dropped %d recommendations with unverified practice codes for farm=%s: %s",
             len(flagged_by_code),
             farm_id,
             [r.practice_code for r in flagged_by_code],

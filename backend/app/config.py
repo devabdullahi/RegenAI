@@ -10,14 +10,16 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
 
-    # Database (direct connection for migrations)
-    database_url: str = ""
+    # LLM provider: DeepSeek (OpenAI-compatible chat completions API)
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
+    llm_max_tokens: int = 4096
+    llm_temperature: float = 0.3
 
-    # Claude API
-    anthropic_api_key: str = ""
-
-    # Resend email
-    resend_api_key: str = ""
+    # External data sources
+    open_meteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
+    ssurgo_sda_url: str = "https://sdmdataaccess.sc.egov.usda.gov/Tabular/post.rest"
 
     # App
     environment: str = "development"
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
         mandatory: dict[str, str] = {
             "SUPABASE_URL": self.supabase_url,
             "SUPABASE_ANON_KEY": self.supabase_anon_key,
-            "ANTHROPIC_API_KEY": self.anthropic_api_key,
+            "DEEPSEEK_API_KEY": self.deepseek_api_key,
         }
         missing = [name for name, value in mandatory.items() if not value]
         if missing:

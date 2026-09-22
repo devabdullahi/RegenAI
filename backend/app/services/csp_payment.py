@@ -1,304 +1,193 @@
 """
-CSP payment estimator for RegenAI.
+CSP payment estimator for RegenAI (FY2026 NRCS rules).
 
-Implements the two-component CSP payment formula for FY2024+:
+Implements the FY2026 CSP payment structure described in NRCS National
+Bulletin 440-26-2 (2025-12-17):
 
-    Total Annual Payment = EAP + EnAP
+    Annual estimate = Existing Activity Payment (EAP) + activity payments
 
     Existing Activity Payment (EAP):
-        Per-acre rate (state + land use) × total eligible acres × number of
-        resource concerns currently addressed above the stewardship threshold.
+        A fixed amount per contract each year for new contracts starting in
+        FY2026 (``CSP_EXISTING_ACTIVITY_PAYMENT``). It is not a floor on the
+        total payment and does not scale with acres. It is only estimated when
+        the farm can hold a contract (meets the stewardship threshold on the
+        minimum number of priority resource concerns).
 
-    Enhancement Activity Payment (EnAP):
-        100% of estimated practice implementation cost for each enhancement
-        activity the producer commits to adopting. When 3 or more enhancement
-        activities form a recognized bundle, the rate is 115% (bundle premium).
+    Activity payments:
+        Per-acre estimates for the conservation activities the producer adopts.
+        FY2026 no longer uses unique "E" enhancement codes or bundles, so
+        activities are keyed by NRCS conservation practice standard code.
+        Rates are pre-FY2026 estimates pending the FY2026 state payment
+        schedule (see ``program_rules``).
 
-Payment caps (FY2024 NRCS rules):
-    - Minimum annual payment:   $4,000 per contract
-    - Maximum annual payment:   $50,000 per contract
-    - Maximum contract payment: $200,000 over 5 years
+Limits:
+    - Annual payment limitation: ``CSP_ANNUAL_PAYMENT_LIMIT`` (none in FY2026).
+    - Contract limit by contract fiscal year and operation type
+      (``csp_contract_limit``). The 5-year total is capped at that limit.
 
-EAP rates are state- and land-use-specific flat rates published in the NRCS
-FY2024 CSP payment schedule. Enhancement practice cost estimates are derived
-from the NRCS national average cost-per-acre database.
+All rule values, the activity catalog and their citations live in
+``app.services.program_rules``.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Final
 
+from postgrest.exceptions import APIError
+
+from app.services.csp_eligibility import fetch_latest_assessment
+from app.services.csp_scoring import calculate_stewardship_score
+from app.services.program_rules import (
+    CSP_ACTIVITY_RATE_BASIS,
+    CSP_ANNUAL_PAYMENT_LIMIT,
+    CSP_CONTRACT_YEARS,
+    CSP_DEFAULT_CONTRACT_FY,
+    CSP_EXISTING_ACTIVITY_PAYMENT,
+    CSP_HIGHER_PAYMENT_CATEGORIES,
+    CSP_MIN_PRIORITY_CONCERNS,
+    CSP_PRACTICE_CATALOG,
+    CspPractice,
+    csp_contract_limit,
+    csp_rules_metadata,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Payment schedule constants (FY2024)
+# Rule constants (sourced from program_rules)
 # ---------------------------------------------------------------------------
 
-_CONTRACT_YEARS: Final[int] = 5
-_MIN_ANNUAL_PAYMENT: Final[float] = 4_000.0
-_MAX_ANNUAL_PAYMENT: Final[float] = 50_000.0
-_MAX_CONTRACT_PAYMENT: Final[float] = 200_000.0
+_CONTRACT_YEARS: Final[int] = int(CSP_CONTRACT_YEARS.value)
+_EXISTING_ACTIVITY_PAYMENT: Final[float] = float(CSP_EXISTING_ACTIVITY_PAYMENT.value or 0.0)
+_ANNUAL_PAYMENT_LIMIT: Final[float | None] = CSP_ANNUAL_PAYMENT_LIMIT.value
+_MIN_CONCERNS_FOR_CONTRACT: Final[int] = int(CSP_MIN_PRIORITY_CONCERNS.value or 0)
 
-# EAP base rates (USD per acre) by state and land use type.
-# Source: NRCS FY2024 CSP Payment Schedules — cropland rates.
-_EAP_RATES_CROPLAND: Final[dict[str, float]] = {
-    "IL": 18.50,
-    "IN": 17.75,
-    "IA": 19.25,
-    "KS": 15.50,
-    "MI": 16.00,
-    "MN": 18.00,
-    "MO": 16.50,
-    "NE": 16.75,
-    "ND": 14.25,
-    "OH": 17.25,
-    "SD": 14.50,
-    "WI": 17.00,
-    "_default": 16.00,
+# Priority weights used to rank activities: a concern the farm has not yet met
+# counts double, because closing it moves the farm toward eligibility.
+_UNMET_CONCERN_WEIGHT: Final[float] = 2.0
+_MET_CONCERN_WEIGHT: Final[float] = 1.0
+
+#: CSP activities — catalog entries that carry a payment estimate.
+_CSP_ACTIVITIES: Final[dict[str, CspPractice]] = {
+    code: practice
+    for code, practice in CSP_PRACTICE_CATALOG.items()
+    if practice.is_csp_activity
 }
 
-# EAP rates for pasture/hay land (generally lower than cropland)
-_EAP_RATES_PASTURE: Final[dict[str, float]] = {
-    "IL": 11.00,
-    "IN": 10.50,
-    "IA": 11.50,
-    "KS": 9.25,
-    "MI": 9.75,
-    "MN": 10.75,
-    "MO": 9.75,
-    "NE": 10.00,
-    "ND": 8.50,
-    "OH": 10.25,
-    "SD": 8.75,
-    "WI": 10.00,
-    "_default": 9.75,
+# Default activity scenario used for the annual estimate when the producer has
+# not selected activities: cover crop, nutrient management, and RCCR.
+_DEFAULT_ACTIVITY_CODES: Final[list[str]] = ["340", "590", "328-RCCR"]
+
+# Map retired E-codes to the FY2026 activity that replaces them.
+_LEGACY_CODE_MAP: Final[dict[str, str]] = {
+    legacy: code
+    for code, activity in _CSP_ACTIVITIES.items()
+    for legacy in activity.legacy_codes
 }
-
-# EAP rate multiplier per additional resource concern above threshold.
-# Base rate covers the first concern; each additional concern adds this fraction.
-_EAP_ADDITIONAL_CONCERN_MULTIPLIER: Final[float] = 0.25
-
-# Enhancement activity cost estimates (USD per acre).
-# Source: NRCS national average practice cost schedule.
-_ENHANCEMENT_COSTS_PER_ACRE: Final[dict[str, float]] = {
-    "E327A": 45.00,   # Conservation Cover — establishment
-    "E328A": 12.00,   # Resource Conserving Crop Rotation
-    "E329A": 8.50,    # No-Till (transition year)
-    "E330A": 18.00,   # Contour Farming
-    "E340A": 35.00,   # Cover Crop — species mix
-    "E380A": 120.00,  # Windbreak/Shelterbelt Establishment (per acre equivalent)
-    "E382A": 22.00,   # Fence
-    "E393A": 55.00,   # Filter Strip establishment
-    "E412A": 95.00,   # Grassed Waterway
-    "E484A": 80.00,   # Irrigation Pipeline
-    "E528A": 15.00,   # Prescribed Grazing Plan
-    "E590A": 10.00,   # Nutrient Management Plan
-    "E600A": 180.00,  # Terrace
-    "E612A": 140.00,  # Tree/Shrub Establishment
-    "E657A": 65.00,   # Micro-Irrigation System
-    "E666A": 12.00,   # Irrigation Water Management Plan
-}
-
-# Human-readable names for enhancement activities
-_ENHANCEMENT_NAMES: Final[dict[str, str]] = {
-    "E327A": "Conservation Cover",
-    "E328A": "Resource Conserving Crop Rotation",
-    "E329A": "Residue and Tillage Management, No-Till",
-    "E330A": "Contour Farming",
-    "E340A": "Cover Crop — Diverse Species Mix",
-    "E380A": "Windbreak/Shelterbelt Establishment",
-    "E382A": "Livestock Exclusion Fence",
-    "E393A": "Filter Strip",
-    "E412A": "Grassed Waterway",
-    "E484A": "Irrigation Pipeline",
-    "E528A": "Prescribed Grazing",
-    "E590A": "Nutrient Management Plan",
-    "E600A": "Terrace",
-    "E612A": "Tree and Shrub Establishment",
-    "E657A": "Irrigation System — Micro-Irrigation",
-    "E666A": "Irrigation Water Management",
-}
-
-# Resource concerns each enhancement primarily addresses
-_ENHANCEMENT_CONCERNS: Final[dict[str, list[str]]] = {
-    "E327A": ["plant_condition", "soil_health"],
-    "E328A": ["soil_health", "soil_erosion"],
-    "E329A": ["soil_health", "soil_erosion", "water_quality"],
-    "E330A": ["soil_erosion"],
-    "E340A": ["soil_health", "water_quality", "air_quality"],
-    "E380A": ["soil_erosion", "air_quality"],
-    "E382A": ["animals", "water_quality"],
-    "E393A": ["water_quality", "soil_erosion"],
-    "E412A": ["water_quality", "soil_erosion"],
-    "E484A": ["water_quantity"],
-    "E528A": ["plant_condition", "animals"],
-    "E590A": ["water_quality"],
-    "E600A": ["water_quality", "soil_erosion"],
-    "E612A": ["soil_erosion", "air_quality", "plant_condition"],
-    "E657A": ["energy", "water_quantity"],
-    "E666A": ["water_quantity"],
-}
-
-# Minimum number of enhancements required to qualify for the 115% bundle premium.
-_BUNDLE_THRESHOLD: Final[int] = 3
-_BUNDLE_RATE: Final[float] = 1.15
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _eap_rate(state: str, land_use: str = "cropland") -> float:
-    """Look up the base EAP per-acre rate for a state and land use.
+def _utcnow() -> datetime:
+    """Current UTC time (isolated so tests can pin the date)."""
+    return datetime.now(tz=timezone.utc)
+
+
+def normalize_activity_code(code: str) -> str | None:
+    """Return the FY2026 activity code for a code or retired E-code.
 
     Args:
-        state: Two-letter state abbreviation.
-        land_use: 'cropland' (default) or 'pasture'.
+        code: A current activity code (e.g. '340') or retired E-code ('E340A').
 
     Returns:
-        EAP rate in USD per acre.
+        The current activity code, or None if the code is unknown.
     """
-    key = state.upper()
-    if land_use == "pasture":
-        return _EAP_RATES_PASTURE.get(key, _EAP_RATES_PASTURE["_default"])
-    return _EAP_RATES_CROPLAND.get(key, _EAP_RATES_CROPLAND["_default"])
+    if code in _CSP_ACTIVITIES:
+        return code
+    return _LEGACY_CODE_MAP.get(code.upper())
 
 
-def _calculate_eap(
+def _activity_view(code: str, total_acres: float) -> dict:
+    """Build the public dict for one catalog activity at a farm's acreage."""
+    activity = _CSP_ACTIVITIES[code]
+    rate = float(activity.estimated_rate_per_acre or 0.0)
+    category_key = activity.higher_payment_category
+    return {
+        "code": code,
+        "practice_standard_code": activity.practice_standard_code,
+        "name": activity.name,
+        "higher_payment": category_key is not None,
+        "higher_payment_category": (
+            CSP_HIGHER_PAYMENT_CATEGORIES[category_key] if category_key else None
+        ),
+        "estimated_rate_per_acre": rate,
+        "rate_is_estimate": True,
+        "acres": total_acres,
+        "estimated_annual_payment": round(rate * total_acres, 2),
+    }
+
+
+def _calculate_eap(concerns_meeting_threshold: int) -> float:
+    """Return the annual Existing Activity Payment for a contract.
+
+    FY2026 rule: a fixed per-contract amount each year
+    (``CSP_EXISTING_ACTIVITY_PAYMENT``). A contract requires the
+    farm to meet the stewardship threshold on the minimum number of priority
+    resource concerns, so no EAP is estimated below that.
+    """
+    if concerns_meeting_threshold < _MIN_CONCERNS_FOR_CONTRACT:
+        return 0.0
+    return _EXISTING_ACTIVITY_PAYMENT
+
+
+def _calculate_activity_payments(
+    activity_codes: list[str],
     total_acres: float,
-    concerns_meeting_threshold: int,
-    state: str,
-    land_use: str = "cropland",
-) -> tuple[float, float]:
-    """Calculate the annual Existing Activity Payment (EAP).
+) -> tuple[float, list[dict]]:
+    """Sum estimated per-acre activity payments.
 
-    Formula (FY2024):
-        base_rate = EAP per-acre rate for state/land-use
-        effective_rate = base_rate × (1 + (concerns - 1) × 0.25)
-        EAP = effective_rate × total_acres
-
-    The 25% increment per additional concern above the first reflects NRCS
-    policy that farms addressing more resource concerns earn a proportionally
-    higher EAP.
-
-    Args:
-        total_acres: Total eligible cropland acres in the operation.
-        concerns_meeting_threshold: Number of priority resource concerns
-            currently addressed above the stewardship threshold.
-        state: Two-letter state abbreviation.
-        land_use: 'cropland' or 'pasture'.
+    No bundle premium is applied — bundles are not offered in FY2026.
+    Unknown codes contribute nothing.
 
     Returns:
-        Tuple of (annual_eap, effective_rate_per_acre).
+        Tuple of (annual_activity_payment, per-activity breakdown).
     """
-    if concerns_meeting_threshold < 1:
-        return 0.0, 0.0
+    breakdown: list[dict] = []
+    seen: set[str] = set()
+    for raw in activity_codes:
+        code = normalize_activity_code(raw)
+        if code is None or code in seen:
+            continue
+        seen.add(code)
+        breakdown.append(_activity_view(code, total_acres))
+    total = round(sum(item["estimated_annual_payment"] for item in breakdown), 2)
+    return total, breakdown
 
-    base_rate = _eap_rate(state, land_use)
-    # Each concern beyond the first adds 25% of the base rate
-    extra_concerns = max(0, concerns_meeting_threshold - 1)
-    effective_rate = base_rate * (1.0 + extra_concerns * _EAP_ADDITIONAL_CONCERN_MULTIPLIER)
-    annual_eap = round(effective_rate * total_acres, 2)
-    return annual_eap, round(effective_rate, 4)
 
+def _apply_contract_limit(
+    annual_payment: float,
+    contract_limit: float,
+) -> tuple[float, float, bool]:
+    """Apply FY2026 limits to an annual payment estimate.
 
-def _calculate_enap(
-    enhancement_codes: list[str],
-    total_acres: float,
-) -> tuple[float, bool]:
-    """Calculate the annual Enhancement Activity Payment (EnAP).
-
-    Formula:
-        cost_per_acre = sum of per-acre costs for each selected enhancement
-        is_bundle = len(enhancements) >= 3
-        payment_rate = 1.15 if is_bundle else 1.00
-        EnAP = cost_per_acre × total_acres × payment_rate
-
-    Args:
-        enhancement_codes: List of E-codes for enhancements the producer
-            commits to adopting.
-        total_acres: Total eligible acres.
+    - No annual payment limit: the annual estimate is returned unchanged.
+    - The 5-year contract total is capped at ``contract_limit``.
 
     Returns:
-        Tuple of (annual_enap, is_bundle).
+        Tuple of (annual_payment, five_year_total, contract_limit_applied).
     """
-    if not enhancement_codes:
-        return 0.0, False
-
-    total_cost_per_acre = sum(
-        _ENHANCEMENT_COSTS_PER_ACRE.get(code, 0.0) for code in enhancement_codes
-    )
-    is_bundle = len(enhancement_codes) >= _BUNDLE_THRESHOLD
-    rate = _BUNDLE_RATE if is_bundle else 1.0
-    annual_enap = round(total_cost_per_acre * total_acres * rate, 2)
-    return annual_enap, is_bundle
+    annual = round(max(0.0, annual_payment), 2)
+    five_year = annual * _CONTRACT_YEARS
+    capped = five_year > contract_limit
+    if capped:
+        five_year = contract_limit
+    return annual, round(five_year, 2), capped
 
 
-def _apply_payment_caps(annual_payment: float) -> tuple[float, float, bool]:
-    """Enforce NRCS annual and contract payment caps.
-
-    Rules:
-        - Minimum annual payment: $4,000 (enforced only if eligible)
-        - Maximum annual payment: $50,000
-        - Maximum contract total: $200,000 over 5 years
-
-    The annual cap ($50k) and contract cap ($200k) are applied independently.
-    A farmer can receive $50k in year 1 but the 5-year total cannot exceed $200k.
-
-    Returns:
-        Tuple of (capped_annual, five_year_total, was_capped).
-    """
-    capped = annual_payment
-    was_capped = False
-
-    if capped > _MAX_ANNUAL_PAYMENT:
-        capped = _MAX_ANNUAL_PAYMENT
-        was_capped = True
-
-    # Apply minimum floor only if some payment is due
-    if 0 < capped < _MIN_ANNUAL_PAYMENT:
-        capped = _MIN_ANNUAL_PAYMENT
-
-    # 5-year total is capped independently at $200k
-    five_year = capped * _CONTRACT_YEARS
-    if five_year > _MAX_CONTRACT_PAYMENT:
-        five_year = _MAX_CONTRACT_PAYMENT
-        was_capped = True
-
-    return round(capped, 2), round(five_year, 2), was_capped
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
-async def estimate_csp_payments(farm_id: str, supabase) -> dict:
-    """Estimate annual and 5-year CSP payments for a farm.
-
-    Algorithm:
-        1. Fetch farm (state, total_acres).
-        2. Fetch all fields for per-field breakdown.
-        3. Fetch most-recent CSP assessment for concerns_meeting_threshold.
-           If no cached assessment exists, run scoring inline.
-        4. Determine applicable enhancement activities from the
-           csp_enhancement_activities reference table and field practices.
-        5. Calculate EAP and EnAP with NRCS formula.
-        6. Apply annual and 5-year payment caps.
-        7. Return structured payment estimate.
-
-    Args:
-        farm_id: UUID of the farm to estimate payments for.
-        supabase: Authenticated Supabase client (respects RLS).
-
-    Returns:
-        A dict conforming to CSPPaymentEstimate schema fields.
-
-    Raises:
-        ValueError: If the farm cannot be found.
-    """
-    # ------------------------------------------------------------------
-    # 1. Fetch farm record
-    # ------------------------------------------------------------------
+def _fetch_farm(farm_id: str, supabase) -> dict:
+    """Return the farm row or raise ValueError if it is missing or hidden."""
     try:
         farm_result = (
             supabase.table("farms")
@@ -307,20 +196,60 @@ async def estimate_csp_payments(farm_id: str, supabase) -> dict:
             .single()
             .execute()
         )
-        farm: dict = farm_result.data or {}
-    except Exception:
-        logger.exception("csp_payment: failed to fetch farm=%s", farm_id)
-        raise ValueError(f"Could not retrieve farm {farm_id}")
+    except APIError as exc:
+        # .single() raises when zero rows match (missing or hidden by RLS).
+        logger.warning("csp_payment: farm lookup failed farm=%s error=%s", farm_id, exc)
+        raise ValueError(f"Could not retrieve farm {farm_id}") from exc
 
+    farm: dict = farm_result.data or {}
     if not farm:
         raise ValueError(f"Farm {farm_id} not found")
+    return farm
 
-    state: str = farm.get("state", "").upper()
+
+# ---------------------------------------------------------------------------
+# Public entry points
+# ---------------------------------------------------------------------------
+
+async def estimate_csp_payments(
+    farm_id: str,
+    supabase,
+    contract_fiscal_year: int = CSP_DEFAULT_CONTRACT_FY,
+    joint_operation: bool = False,
+) -> dict:
+    """Estimate annual and 5-year CSP payments for a farm.
+
+    Algorithm:
+        1. Fetch farm (state, total_acres) and fields.
+        2. Read concerns meeting threshold from the latest persisted
+           assessment, or run scoring inline when none exists.
+        3. EAP per contract per year (if the farm can hold a contract).
+        4. Activity payments = sum of estimated per-acre rates x acres.
+        5. Annual estimate = EAP + activity payments (no annual limit).
+        6. 5-year total capped at the contract limit for the contract's
+           fiscal year and operation type.
+
+    Args:
+        farm_id: UUID string of the farm to estimate payments for.
+        supabase: Authenticated Supabase client (respects RLS).
+        contract_fiscal_year: Fiscal year the contract is obligated in
+            (default: FY2026, i.e. a new contract).
+        joint_operation: True for a joint operation contract.
+
+    Returns:
+        A dict conforming to the CSPPaymentEstimate schema.
+
+    Raises:
+        ValueError: If the farm cannot be found.
+    """
+    # 1. Farm
+    farm = _fetch_farm(farm_id, supabase)
+    state: str = (farm.get("state") or "").upper()
     total_acres: float = float(farm.get("total_acres") or 0.0)
 
-    # ------------------------------------------------------------------
-    # 2. Fetch fields for per-field breakdown
-    # ------------------------------------------------------------------
+    # Fields are only used for the per-field breakdown, so a failure degrades
+    # to an empty breakdown instead of failing the estimate.
+    fields: list[dict] = []
     try:
         fields_result = (
             supabase.table("fields")
@@ -328,284 +257,198 @@ async def estimate_csp_payments(farm_id: str, supabase) -> dict:
             .eq("farm_id", farm_id)
             .execute()
         )
-        fields: list[dict] = fields_result.data or []
-    except Exception:
-        logger.exception("csp_payment: failed to fetch fields for farm=%s", farm_id)
-        fields = []
-
-    field_ids: list[str] = [f["id"] for f in fields]
-
-    # ------------------------------------------------------------------
-    # 3. Get concerns_meeting_threshold from cached assessment or scoring
-    # ------------------------------------------------------------------
-    concerns_meeting_threshold: int = 0
-
-    try:
-        assessment_result = (
-            supabase.table("csp_eligibility_assessments")
-            .select("rc_count_above_threshold, stewardship_score")
-            .eq("farm_id", farm_id)
-            .single()
-            .execute()
-        )
-        if assessment_result.data:
-            concerns_meeting_threshold = int(
-                assessment_result.data.get("rc_count_above_threshold") or 0
-            )
-    except Exception:
+        fields = fields_result.data or []
+    except APIError as exc:
         logger.warning(
-            "csp_payment: no cached assessment for farm=%s — running scoring inline",
-            farm_id,
+            "csp_payment: fields unavailable for breakdown farm=%s error=%s", farm_id, exc
         )
-        # Run scoring inline if no cached assessment
-        try:
-            from app.services.csp_scoring import calculate_stewardship_score
 
-            score_data = await calculate_stewardship_score(farm_id, supabase)
-            concerns_meeting_threshold = sum(
-                1
-                for c in score_data["resource_concern_scores"]
-                if c["meets_threshold"]
-            )
-        except Exception:
-            logger.exception(
-                "csp_payment: inline scoring failed for farm=%s", farm_id
-            )
-            concerns_meeting_threshold = 0
-
-    # ------------------------------------------------------------------
-    # 4. Determine applicable enhancement activities
-    #    Pull recommended enhancements from enhancement reference table
-    # ------------------------------------------------------------------
-    enhancement_codes: list[str] = []
-
+    # 2. Concerns meeting threshold
+    assessment: dict | None = None
     try:
-        enh_result = (
-            supabase.table("csp_enhancement_activities")
-            .select("code, name, estimated_cost_per_acre")
-            .eq("land_use", "cropland")
-            .execute()
+        assessment = fetch_latest_assessment(
+            supabase, farm_id, "rc_count_above_threshold, stewardship_score"
         )
-        enh_rows: list[dict] = enh_result.data or []
-    except Exception:
+    except APIError as exc:
         logger.warning(
-            "csp_payment: could not fetch enhancement activities for farm=%s — using defaults",
+            "csp_payment: could not read persisted assessment farm=%s error=%s",
             farm_id,
+            exc,
         )
-        enh_rows = []
 
-    # Build enhancement list: use DB entries if available, else use our local
-    # cost schedule keys. Limit to top 5 for a realistic enhancement scenario.
-    if enh_rows:
-        # Pick the first 5 from the reference table
-        enhancement_codes = [row["code"] for row in enh_rows[:5]]
+    if assessment is not None:
+        concerns_meeting_threshold = int(assessment.get("rc_count_above_threshold") or 0)
     else:
-        # Fallback: use the 3 highest-value enhancements from our cost table
-        enhancement_codes = ["E340A", "E590A", "E328A"]
+        logger.info(
+            "csp_payment: no persisted assessment for farm=%s — running scoring inline",
+            farm_id,
+        )
+        score_data = await calculate_stewardship_score(farm_id, supabase)
+        concerns_meeting_threshold = sum(
+            1 for c in score_data["resource_concern_scores"] if c["meets_threshold"]
+        )
 
-    # ------------------------------------------------------------------
-    # 5. Calculate EAP
-    # ------------------------------------------------------------------
-    eap_annual, eap_rate_per_acre = _calculate_eap(
-        total_acres=total_acres,
-        concerns_meeting_threshold=concerns_meeting_threshold,
-        state=state,
-        land_use="cropland",
+    # 3-4. EAP and activity payments
+    eap_annual = _calculate_eap(concerns_meeting_threshold)
+    activity_payment_annual, activities = _calculate_activity_payments(
+        _DEFAULT_ACTIVITY_CODES, total_acres
     )
 
-    # ------------------------------------------------------------------
-    # 6. Calculate EnAP
-    # ------------------------------------------------------------------
-    enap_annual, is_bundle = _calculate_enap(
-        enhancement_codes=enhancement_codes,
-        total_acres=total_acres,
+    # 5-6. Limits
+    limit = csp_contract_limit(contract_fiscal_year, joint_operation)
+    annual_total, five_year_total, limit_applied = _apply_contract_limit(
+        eap_annual + activity_payment_annual, limit["amount"]
     )
 
-    # ------------------------------------------------------------------
-    # 7. Apply payment caps
-    # ------------------------------------------------------------------
-    raw_annual_total = eap_annual + enap_annual
-    annual_total, five_year_total, was_capped = _apply_payment_caps(raw_annual_total)
-
-    # Pro-rate EAP and EnAP if cap was applied
-    if was_capped and raw_annual_total > 0:
-        cap_ratio = annual_total / raw_annual_total
-        eap_annual = round(eap_annual * cap_ratio, 2)
-        enap_annual = round(enap_annual * cap_ratio, 2)
-
-    # ------------------------------------------------------------------
-    # 8. Build per-field breakdown
-    # ------------------------------------------------------------------
+    # Per-field breakdown (proportional to acres)
     field_breakdown: list[dict] = []
     for field in fields:
         field_acres = float(field.get("acres") or 0.0)
-        if total_acres > 0:
-            field_share = field_acres / total_acres
-        else:
-            field_share = 0.0
-
+        share = field_acres / total_acres if total_acres > 0 else 0.0
         field_breakdown.append(
             {
-                "field_id": field["id"],
-                "field_name": field.get("name", ""),
+                "field_id": str(field["id"]),
+                "field_name": field.get("name") or "",
                 "acres": field_acres,
-                "eap_annual": round(eap_annual * field_share, 2),
-                "enap_annual": round(enap_annual * field_share, 2),
-                "total_annual": round(annual_total * field_share, 2),
+                "eap_annual": round(eap_annual * share, 2),
+                "activity_payment_annual": round(activity_payment_annual * share, 2),
+                "total_annual": round(annual_total * share, 2),
             }
         )
 
     logger.info(
-        "csp_payment: farm=%s state=%s acres=%.1f concerns=%d "
-        "eap=%.2f enap=%.2f total=%.2f capped=%s",
+        "csp_payment: farm=%s state=%s acres=%.1f concerns=%d eap=%.2f "
+        "activities=%.2f total=%.2f contract_fy=%d joint=%s limit_applied=%s",
         farm_id,
         state,
         total_acres,
         concerns_meeting_threshold,
         eap_annual,
-        enap_annual,
+        activity_payment_annual,
         annual_total,
-        was_capped,
+        contract_fiscal_year,
+        joint_operation,
+        limit_applied,
     )
-
-    now = datetime.now(tz=timezone.utc).isoformat()
 
     return {
         "farm_id": farm_id,
         "eligible_acres": total_acres,
-        "eap_annual": eap_annual,
-        "eap_rate_per_acre": eap_rate_per_acre,
         "resource_concerns_addressed": concerns_meeting_threshold,
-        "enap_annual": enap_annual,
-        "enap_is_bundle": is_bundle,
-        "enhancement_codes_included": enhancement_codes,
+        "eap_annual": eap_annual,
+        "activity_payment_annual": activity_payment_annual,
+        "activities_included": activities,
         "total_annual_payment": annual_total,
         "total_5year_payment": five_year_total,
-        "payment_capped": was_capped,
+        "contract_years": _CONTRACT_YEARS,
+        "contract_fiscal_year": contract_fiscal_year,
+        "joint_operation": joint_operation,
+        "contract_limit": limit,
+        "annual_payment_limit": _ANNUAL_PAYMENT_LIMIT,
+        "payment_capped": limit_applied,
         "field_breakdown": field_breakdown,
         "state": state,
-        "estimated_at": now,
+        "rules": csp_rules_metadata(contract_fiscal_year, joint_operation),
+        "estimated_at": _utcnow().isoformat(),
     }
 
 
 async def get_recommended_enhancements(farm_id: str, supabase) -> list[dict]:
-    """Return scored and ranked CSP enhancement activity recommendations.
+    """Return scored and ranked CSP activity recommendations for a farm.
 
-    Fetches the enhancement activity reference table, filters to cropland
-    activities, and scores each by how well it would close the farm's current
-    stewardship gaps — favouring activities that address concerns currently
-    below threshold.
+    Scores each activity in the FY2026 catalog by how well it closes the
+    farm's current stewardship gaps. Descriptions from the
+    ``csp_enhancement_activities`` reference table are used when an active row
+    exists for the activity code; retired E-code rows are ignored.
 
     Args:
-        farm_id: UUID of the farm.
+        farm_id: UUID string of the farm.
         supabase: Authenticated Supabase client.
 
     Returns:
-        List of enhancement dicts sorted by priority score descending.
+        List of activity dicts sorted by priority score descending.
 
     Raises:
         ValueError: If the farm cannot be found.
     """
-    # Fetch farm for acres
-    try:
-        farm_result = (
-            supabase.table("farms")
-            .select("id, state, total_acres")
-            .eq("id", farm_id)
-            .single()
-            .execute()
-        )
-        farm: dict = farm_result.data or {}
-    except Exception:
-        raise ValueError(f"Could not retrieve farm {farm_id}")
-
-    if not farm:
-        raise ValueError(f"Farm {farm_id} not found")
-
+    farm = _fetch_farm(farm_id, supabase)
     total_acres: float = float(farm.get("total_acres") or 0.0)
 
-    # Identify concerns below threshold from cached or fresh assessment
-    below_threshold_concerns: set[str] = set()
+    # Concerns below threshold. Without a persisted assessment every concern
+    # is treated as unmet, so ranking falls back to breadth of coverage.
+    all_concerns = {
+        concern
+        for activity in _CSP_ACTIVITIES.values()
+        for concern in activity.resource_concerns
+    }
+    below_threshold_concerns: set[str] = set(all_concerns)
     try:
-        assessment_result = (
-            supabase.table("csp_eligibility_assessments")
-            .select("resource_concerns_met")
-            .eq("farm_id", farm_id)
-            .single()
-            .execute()
-        )
-        if assessment_result.data:
-            score_bd = assessment_result.data.get("resource_concerns_met") or {}
-            for concern in score_bd.get("resource_concern_scores", []):
-                if not concern.get("meets_threshold", False):
-                    below_threshold_concerns.add(concern["concern_id"])
-    except Exception:
+        assessment = fetch_latest_assessment(supabase, farm_id, "resource_concerns_met")
+    except APIError as exc:
         logger.warning(
-            "csp_payment: no cached assessment for enhancements farm=%s", farm_id
+            "csp_payment: could not read persisted assessment for activities "
+            "farm=%s error=%s",
+            farm_id,
+            exc,
         )
-        # Default: assume all concerns need work
-        below_threshold_concerns = set(_ENHANCEMENT_CONCERNS.keys())
+        assessment = None
 
-    # Fetch reference table
-    try:
-        enh_result = (
-            supabase.table("csp_enhancement_activities")
-            .select("*")
-            .eq("land_use", "cropland")
-            .execute()
-        )
-        enh_rows: list[dict] = enh_result.data or []
-    except Exception:
-        logger.warning(
-            "csp_payment: enhancement reference table unavailable for farm=%s", farm_id
-        )
-        enh_rows = []
-
-    # If no DB entries, build from local constants
-    if not enh_rows:
-        enh_rows = [
-            {
-                "code": code,
-                "name": _ENHANCEMENT_NAMES.get(code, code),
-                "category": _ENHANCEMENT_CONCERNS.get(code, ["general"])[0],
-                "land_use": "cropland",
-                "description": f"Enhancement activity {code}",
-                "estimated_cost_per_acre": _ENHANCEMENT_COSTS_PER_ACRE.get(code, 15.0),
+    if assessment:
+        score_breakdown = assessment.get("resource_concerns_met") or {}
+        if isinstance(score_breakdown, dict):
+            below_threshold_concerns = {
+                concern["concern_id"]
+                for concern in score_breakdown.get("resource_concern_scores", [])
+                if not concern.get("meets_threshold", False)
             }
-            for code in _ENHANCEMENT_COSTS_PER_ACRE
-        ]
 
-    # Score each enhancement
+    # Optional descriptive overrides from the reference table
+    db_rows: dict[str, dict] = {}
+    try:
+        rows_result = (
+            supabase.table("csp_enhancement_activities")
+            .select("code, name, description, implementation_notes, active")
+            .eq("active", True)
+            .execute()
+        )
+        for row in rows_result.data or []:
+            code = row.get("code")
+            if code in _CSP_ACTIVITIES:
+                db_rows[code] = row
+    except APIError as exc:
+        logger.warning(
+            "csp_payment: activity reference table unavailable farm=%s error=%s",
+            farm_id,
+            exc,
+        )
+
     results: list[dict] = []
-    for row in enh_rows:
-        code: str = row.get("code", "")
-        concerns_addressed = _ENHANCEMENT_CONCERNS.get(code, [])
-        # Priority score: +2 for each below-threshold concern addressed, +1 for others
-        priority_score: float = sum(
-            2.0 if c in below_threshold_concerns else 1.0
-            for c in concerns_addressed
+    for code, activity in _CSP_ACTIVITIES.items():
+        concerns = activity.resource_concerns
+        priority_score = sum(
+            _UNMET_CONCERN_WEIGHT if c in below_threshold_concerns else _MET_CONCERN_WEIGHT
+            for c in concerns
         )
-
-        cost_per_acre = float(
-            row.get("estimated_cost_per_acre")
-            or _ENHANCEMENT_COSTS_PER_ACRE.get(code, 15.0)
-        )
-        is_bundle_eligible = len(concerns_addressed) >= 2
-
+        view = _activity_view(code, total_acres)
+        row = db_rows.get(code, {})
         results.append(
             {
                 "code": code,
-                "name": row.get("name", _ENHANCEMENT_NAMES.get(code, code)),
-                "category": row.get("category", ""),
-                "land_use": row.get("land_use", "cropland"),
-                "description": row.get("description", ""),
-                "estimated_cost_per_acre": cost_per_acre,
-                "payment_rate_pct": 115.0 if is_bundle_eligible else 100.0,
-                "estimated_annual_payment": round(cost_per_acre * total_acres, 2),
+                "practice_standard_code": activity.practice_standard_code,
+                "name": row.get("name") or activity.name,
+                "category": activity.category,
+                "land_use": "cropland",
+                "description": row.get("description") or activity.description,
+                "implementation_notes": row.get("implementation_notes") or "",
+                "estimated_rate_per_acre": view["estimated_rate_per_acre"],
+                "rate_is_estimate": True,
+                "rate_basis": CSP_ACTIVITY_RATE_BASIS,
+                "estimated_annual_payment": view["estimated_annual_payment"],
                 "applicable_acres": total_acres,
-                "resource_concerns_addressed": concerns_addressed,
+                "resource_concerns_addressed": list(concerns),
                 "priority_score": priority_score,
-                "is_bundle_eligible": is_bundle_eligible,
+                "higher_payment": view["higher_payment"],
+                "higher_payment_category": view["higher_payment_category"],
             }
         )
 

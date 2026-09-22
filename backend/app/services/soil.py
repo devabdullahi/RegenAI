@@ -9,32 +9,35 @@ SDA endpoint docs:
 
 Design notes:
   - SSURGO can be genuinely slow (5-15 s) and occasionally returns HTTP 500 or
-    malformed XML/JSON.  All failures are caught and return None with a warning
-    log so the enrichment layer can continue without soil data.
+    malformed XML/JSON.  All failures are caught and return no profile with a
+    warning log so the enrichment layer can continue without soil data.
   - The SDA endpoint returns JSON when the ``format`` field is set to ``JSON``.
-  - We request the dominant component (comppct_r >= 15, ordered DESC) and
+  - We request the dominant component (comppct_r >= _MIN_COMPONENT_PCT, ordered DESC) and
     read only the top horizon for OM, pH, and texture.
+  - Missing pH or organic matter is never replaced with a made-up value.
+    `soil_profiles` requires both (NOT NULL), so an incomplete component is
+    not saved and the missing readings are reported to the caller.
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import httpx
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Public constants
-# ---------------------------------------------------------------------------
-
-SDA_URL = "https://sdmdataaccess.sc.egov.usda.gov/Tabular/post.rest"
 
 _TIMEOUT_SECONDS = 30.0   # SDA can be slow — give it extra headroom
 
+# Components under this share of the map unit are minor inclusions, not the
+# soil a field is farmed on.
+_MIN_COMPONENT_PCT = 15
+
 
 # ---------------------------------------------------------------------------
-# Return type
+# Return types
 # ---------------------------------------------------------------------------
 
 class SoilProfile(TypedDict):
@@ -47,6 +50,17 @@ class SoilProfile(TypedDict):
     organic_matter_pct: float
     source: str              # always "ssurgo" for this service
     fetched_at: str          # ISO-8601 UTC datetime string
+
+
+class SoilLookup(NamedTuple):
+    """Result of a soil query.
+
+    ``profile`` is None when nothing can be saved. ``missing_readings`` names
+    the required readings SSURGO lacked (e.g. ``["ph"]``) when that is why.
+    """
+
+    profile: SoilProfile | None
+    missing_readings: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -82,19 +96,17 @@ INNER JOIN sacatalog ON mapunit.mukey IN (
         geometry::STGeomFromText('POINT({lng} {lat})', 4326)
     ) = 1
 )
-WHERE comppct_r >= 15
+WHERE comppct_r >= {min_component_pct}
 ORDER BY comppct_r DESC\
 """
 
-# Column positions in the SDA response Row array
+# Column positions in the SDA response Row array (order of the SELECT above)
 _COL_MUSYM = 0
-_COL_MUNAME = 1
-_COL_COMPPCT = 2
-_COL_COMPNAME = 3
-_COL_TAXCLNAME = 4
 _COL_OM = 5
 _COL_PH = 6
 _COL_TEXTURE = 7
+
+_NO_PROFILE = SoilLookup(profile=None, missing_readings=[])
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +117,7 @@ async def fetch_soil_profile(
     latitude: float,
     longitude: float,
     field_id: str,
-) -> SoilProfile | None:
+) -> SoilLookup:
     """Query SDA for the dominant soil component at the given coordinates.
 
     Args:
@@ -114,14 +126,13 @@ async def fetch_soil_profile(
         field_id: UUID of the field; embedded in the returned record.
 
     Returns:
-        A SoilProfile dict if a result is found, or None if the API call
-        fails, the point falls outside mapped soil polygons, or the response
-        cannot be parsed.  All failure paths emit a warning log.
-
-    Raises:
-        Never raises — all exceptions are caught and logged.
+        A SoilLookup. ``profile`` is None if the API call fails, the point
+        falls outside mapped soil polygons, the response cannot be parsed, or
+        a required reading is missing. All failure paths emit a warning log.
     """
-    sql = _SOIL_SQL_TEMPLATE.format(lat=latitude, lng=longitude)
+    sql = _SOIL_SQL_TEMPLATE.format(
+        lat=latitude, lng=longitude, min_component_pct=_MIN_COMPONENT_PCT
+    )
     form_data = {"query": sql, "format": "JSON+COLUMNNAME+METADATA"}
 
     fetched_at = datetime.now(tz=timezone.utc).isoformat()
@@ -134,7 +145,7 @@ async def fetch_soil_profile(
                 latitude,
                 longitude,
             )
-            response = await client.post(SDA_URL, data=form_data)
+            response = await client.post(settings.ssurgo_sda_url, data=form_data)
             response.raise_for_status()
             payload = response.json()
     except httpx.TimeoutException:
@@ -143,7 +154,7 @@ async def fetch_soil_profile(
             _TIMEOUT_SECONDS,
             field_id,
         )
-        return None
+        return _NO_PROFILE
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "SSURGO SDA returned HTTP %s for field=%s: %s",
@@ -151,10 +162,13 @@ async def fetch_soil_profile(
             field_id,
             exc.response.text[:300],
         )
-        return None
-    except Exception:
-        logger.exception("Unexpected error querying SSURGO SDA for field=%s", field_id)
-        return None
+        return _NO_PROFILE
+    except (httpx.HTTPError, ValueError) as exc:
+        # Connection errors, and bodies that are not JSON (JSONDecodeError is a ValueError).
+        logger.warning(
+            "SSURGO SDA request failed for field=%s: %s: %s", field_id, type(exc).__name__, exc
+        )
+        return _NO_PROFILE
 
     return _parse_soil_response(payload, field_id, fetched_at)
 
@@ -167,8 +181,8 @@ def _parse_soil_response(
     payload: dict,
     field_id: str,
     fetched_at: str,
-) -> SoilProfile | None:
-    """Convert the SDA JSON payload into a SoilProfile dict.
+) -> SoilLookup:
+    """Convert the SDA JSON payload into a SoilLookup.
 
     SDA returns JSON shaped like::
 
@@ -184,11 +198,10 @@ def _parse_soil_response(
     The first row is the column-name header; subsequent rows are data.
     We take the first data row (highest comppct_r) as the dominant component.
     """
-    try:
-        table = payload.get("Table", [])
-    except AttributeError:
-        logger.warning("SSURGO SDA response is not a dict for field=%s", field_id)
-        return None
+    table = payload.get("Table") if isinstance(payload, dict) else None
+    if not isinstance(table, list):
+        logger.warning("SSURGO SDA response has no Table list for field=%s", field_id)
+        return _NO_PROFILE
 
     # Expect at least a header row + one data row
     if len(table) < 2:
@@ -196,16 +209,16 @@ def _parse_soil_response(
             "SSURGO SDA returned no soil data for field=%s (point may be outside mapped area)",
             field_id,
         )
-        return None
+        return _NO_PROFILE
 
     # table[0] is the column-name row; table[1] is the first (dominant) component
     row = table[1]
 
     try:
-        musym: str = str(row[_COL_MUSYM] or "UNKNOWN")
-        texture: str = str(row[_COL_TEXTURE] or "Unknown")
-        ph: float = float(row[_COL_PH]) if row[_COL_PH] is not None else 7.0
-        organic_matter: float = float(row[_COL_OM]) if row[_COL_OM] is not None else 0.0
+        musym = str(row[_COL_MUSYM] or "UNKNOWN")
+        texture = str(row[_COL_TEXTURE] or "Unknown")
+        ph = float(row[_COL_PH]) if row[_COL_PH] is not None else None
+        organic_matter = float(row[_COL_OM]) if row[_COL_OM] is not None else None
     except (IndexError, TypeError, ValueError) as exc:
         logger.warning(
             "Could not parse SSURGO row for field=%s: %s  row=%r",
@@ -213,7 +226,21 @@ def _parse_soil_response(
             exc,
             row,
         )
-        return None
+        return _NO_PROFILE
+
+    missing_readings = [
+        name
+        for name, value in (("ph", ph), ("organic_matter_pct", organic_matter))
+        if value is None
+    ]
+    if ph is None or organic_matter is None:
+        logger.warning(
+            "SSURGO component for field=%s map_unit=%s lacks %s; profile not saved",
+            field_id,
+            musym,
+            ", ".join(missing_readings),
+        )
+        return SoilLookup(profile=None, missing_readings=missing_readings)
 
     profile: SoilProfile = {
         "field_id": field_id,
@@ -233,4 +260,4 @@ def _parse_soil_response(
         ph,
         organic_matter,
     )
-    return profile
+    return SoilLookup(profile=profile, missing_readings=[])

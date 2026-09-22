@@ -1,19 +1,51 @@
 """
 Prompt templates for the RegenAI recommendation engine.
 
-The system prompt instructs Claude to produce structured JSON recommendations
+The system prompt instructs the LLM to produce structured JSON recommendations
 that cite specific EQIP practice codes and are grounded in the provided soil
 and weather data. Output is framed as decision support, not professional
-agronomic advice.
+agronomic advice. CSP dollar figures are interpolated from program_rules so
+the prompt never repeats a stale rule.
 """
 
-import json
+from app.services.program_rules import (
+    CSP_ACT_NOW_NOTE,
+    CSP_ANNUAL_PAYMENT_LIMIT,
+    CSP_CART_MAX_POINTS_PER_CONCERN,
+    CSP_CONTRACT_LIMIT_FY2026_INDIVIDUAL,
+    CSP_CONTRACT_LIMIT_FY2026_JOINT,
+    CSP_CONTRACT_YEARS,
+    CSP_EXISTING_ACTIVITY_PAYMENT,
+    CSP_MIN_PRIORITY_CONCERNS,
+    CSP_STEWARDSHIP_THRESHOLD_FRACTION,
+    NB_440_26_2_AS_OF,
+)
+
+_CSP_MIN_CONCERNS = int(CSP_MIN_PRIORITY_CONCERNS.value)
+# The scoring model has one entry per NRCS priority resource concern category.
+_CSP_PRIORITY_RESOURCE_CONCERN_COUNT = len(CSP_CART_MAX_POINTS_PER_CONCERN)
+
+
+def _usd(amount: float | int | None) -> str:
+    return f"${float(amount or 0):,.0f}"
+
+
+_EAP_USD = _usd(CSP_EXISTING_ACTIVITY_PAYMENT.value)
+_CONTRACT_LIMIT_INDIVIDUAL_USD = _usd(CSP_CONTRACT_LIMIT_FY2026_INDIVIDUAL.value)
+_CONTRACT_LIMIT_JOINT_USD = _usd(CSP_CONTRACT_LIMIT_FY2026_JOINT.value)
+_ANNUAL_PAYMENT_LIMIT_TEXT = (
+    "no annual payment limit"
+    if CSP_ANNUAL_PAYMENT_LIMIT.value is None
+    else f"{_usd(CSP_ANNUAL_PAYMENT_LIMIT.value)} annual payment limit"
+)
+_STEWARDSHIP_THRESHOLD_PCT = f"{CSP_STEWARDSHIP_THRESHOLD_FRACTION:.0%}"
+
 
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
-RECOMMENDATION_SYSTEM_PROMPT = """\
+RECOMMENDATION_SYSTEM_PROMPT = f"""\
 You are RegenAI, a regenerative agriculture decision-support assistant. Your \
 role is to analyze farm data and suggest conservation practices that a farmer \
 could discuss with their local NRCS office or agronomist.
@@ -36,11 +68,13 @@ agronomist before implementing."
 adopting this practice would affect the farm's CSP eligibility, CART score, \
 and estimated annual payment. Be specific: name the resource concern category \
 addressed, whether it moves the farm closer to or past the stewardship \
-threshold, and whether it could qualify as a CSP enhancement activity.
+threshold, and whether it could be offered as a CSP activity under its NRCS \
+practice standard code.
 
-OUTPUT FORMAT — return a JSON array of objects with exactly these fields:
+OUTPUT FORMAT — return a JSON array of objects with exactly these fields \
+and no others:
 [
-  {
+  {{
     "field_id": "<UUID of the field this recommendation targets>",
     "practice_code": "<EQIP practice code, e.g. 340>",
     "title": "<Short, actionable title, max 120 chars>",
@@ -51,10 +85,10 @@ field's soil, weather, and crop context. Cite specific data points.>",
 eligibility and payment. Example: 'Adopting cover crops (340) addresses the \
 Soil Health and Water Quality resource concern categories. If this brings \
 Soil Health above the stewardship threshold, the farm gains a second qualifying \
-concern and becomes CSP-eligible. As a CSP enhancement (E340A), NRCS would \
-cover 100% of implementation cost (~$35/acre), adding approximately $X/year \
-to the Enhancement Activity Payment.>'>"
-  }
+concern and could become CSP-eligible. Cover crop activities remain a \
+higher-payment CSP category; the activity payment would be added to the \
+{_EAP_USD}/year existing activity payment.'>"
+  }}
 ]
 
 PRIORITY GUIDELINES:
@@ -64,8 +98,11 @@ imbalance) or is strongly aligned with the farmer's stated goals.
 - low: Optional enhancement or long-term investment.
 
 AGRONOMIC REASONING:
-- Low organic matter (<2%) warrants cover crops (340) or conservation cover (327).
-- Acidic pH (<5.5) or alkaline pH (>8.0) should be flagged in rationale.
+- Low organic matter for the field's soil texture supports cover crops (340) or \
+conservation cover (327). Do not cite a fixed organic matter cutoff.
+- Flag soil pH in the rationale when it is outside the range the state's \
+extension service recommends for the crop, and suggest confirming with a soil \
+test. Do not cite a fixed pH cutoff.
 - High precipitation + sloped land suggests grassed waterways (412) or \
 filter strips (393).
 - Existing no-till paired with cover crops is a strong soil health combination.
@@ -76,17 +113,27 @@ wind erosion exposure.
 
 CSP QUALIFICATION REASONING:
 The Conservation Stewardship Program (CSP) pays farmers for EXISTING \
-conservation AND new enhancements over a 5-year contract. Key facts:
-- Eligibility requires meeting the stewardship threshold (>=50% of max points) \
-  on at least 2 of 8 Priority Resource Concern categories.
-- CART scores >= the state ranking threshold qualify for ACT NOW fast-track \
-  approval ($4,000-$50,000/year).
-- CSP Enhancement Activities pay 100% of implementation cost (115% for bundles \
-  of 3+ enhancements). Common enhancement codes: E328A (crop rotation), \
-  E329A (no-till), E340A (cover crop), E590A (nutrient management).
+conservation AND new activities over a {CSP_CONTRACT_YEARS.value}-year contract. \
+Key facts (NRCS rules as of {NB_440_26_2_AS_OF}):
+- Eligibility requires meeting the stewardship threshold \
+(>={_STEWARDSHIP_THRESHOLD_PCT} of max points) on at least \
+{_CSP_MIN_CONCERNS} of {_CSP_PRIORITY_RESOURCE_CONCERN_COUNT} \
+Priority Resource Concern categories.
+- CART scores at or above the state ranking threshold may be considered for ACT \
+NOW fast-track approval if the state offers it. {CSP_ACT_NOW_NOTE} Never promise \
+ACT NOW approval.
+- FY2026 CSP rules: {_EAP_USD}/year existing activity payment per contract plus \
+activity payments; {_ANNUAL_PAYMENT_LIMIT_TEXT}; contract limit of \
+{_CONTRACT_LIMIT_INDIVIDUAL_USD} for individuals and legal entities or \
+{_CONTRACT_LIMIT_JOINT_USD} for joint operations. \
+"E" enhancement codes and bundles were retired. Refer to activities by NRCS \
+practice standard code: 328 (conservation crop rotation), 329 (no-till), \
+340 (cover crop), 590 (nutrient management). Cover crops and resource \
+conserving crop rotations remain higher-payment categories.
 - Practices that address multiple resource concerns (e.g., 329 No-Till addresses \
-  soil health, soil erosion, AND water quality) are especially valuable for \
-  reaching the 2-concern eligibility threshold and raising CART scores.
+soil health, soil erosion, AND water quality) are especially valuable for \
+reaching the {_CSP_MIN_CONCERNS}-concern eligibility threshold \
+and raising CART scores.
 
 If the data is too sparse to make confident recommendations, return a JSON \
 array with a single object whose practice_code is the most universally \
@@ -114,6 +161,72 @@ def _sanitize(value: str, max_length: int = 200) -> str:
     return sanitized.strip()[:max_length]
 
 
+def _csp_assessment_lines(assessment: dict) -> list[str]:
+    """Render the assessment summary built by context._summarize_assessment().
+
+    Lines for values that are unknown are omitted rather than defaulted.
+    """
+    lines: list[str] = []
+
+    fiscal_year = assessment.get("fiscal_year")
+    if fiscal_year:
+        lines.append(f"Assessment fiscal year: FY{fiscal_year}")
+
+    lines.append(f"CSP Eligibility Status: {assessment.get('eligibility_status') or 'unknown'}")
+
+    score = assessment.get("stewardship_score")
+    if score is not None:
+        max_points = assessment.get("max_possible_points")
+        suffix = f" of {float(max_points):.1f} possible" if max_points else ""
+        lines.append(f"CART Score: {float(score):.1f}{suffix}")
+
+    concerns_met = assessment.get("rc_count_above_threshold")
+    if concerns_met is not None:
+        lines.append(
+            f"Priority Resource Concerns meeting threshold: {concerns_met} of "
+            f"{_CSP_MIN_CONCERNS} required"
+        )
+
+    threshold = assessment.get("state_ranking_threshold")
+    if threshold is not None:
+        lines.append(f"State Ranking Threshold used by the assessment: {float(threshold):.1f}")
+        if score is not None:
+            gap = max(0.0, float(threshold) - float(score))
+            lines.append(f"Gap to state ranking threshold: {gap:.1f} points")
+
+    act_now = assessment.get("act_now_eligible")
+    if act_now is not None:
+        lines.append(
+            "Meets state ranking threshold (ACT NOW is at state discretion): "
+            f"{'yes' if act_now else 'no'}"
+        )
+
+    resource_concerns = assessment.get("resource_concerns") or []
+    if resource_concerns:
+        lines.append(
+            f"Resource Concern Scores (threshold = {_STEWARDSHIP_THRESHOLD_PCT} of max points):"
+        )
+        for concern in resource_concerns:
+            indicator = "ABOVE" if concern.get("meets_threshold") else "BELOW"
+            earned = float(concern.get("points_earned") or 0.0)
+            possible = float(concern.get("points_possible") or 0.0)
+            lines.append(
+                f"  - {_sanitize(concern.get('name', ''))}: "
+                f"{earned:.1f} / {possible:.1f} pts [{indicator} threshold]"
+            )
+
+    activity_codes = assessment.get("gap_closure_activity_codes") or []
+    if activity_codes:
+        codes = ", ".join(_sanitize(str(code), 20) for code in activity_codes)
+        lines.append(f"Gap-closure activities suggested by the assessment: {codes}")
+
+    notes = assessment.get("notes")
+    if notes:
+        lines.append(f"Assessment notes: {_sanitize(notes, 600)}")
+
+    return lines
+
+
 def build_user_message(context: dict) -> str:
     """Build the user message from an assembled farm context dict.
 
@@ -124,18 +237,12 @@ def build_user_message(context: dict) -> str:
     All user-provided text (farm names, field names, crop types, boundary
     descriptions) is sanitized before inclusion to mitigate prompt injection.
 
-    When a CSP assessment is available in context["csp_assessment"], the
-    message includes the farm's current CART score, eligibility status, and
-    resource concern breakdown so the LLM can accurately describe CSP impact
-    for each recommendation.
-
     Args:
-        context: The dict returned by assemble_farm_context(). May optionally
-            contain a "csp_assessment" key with the latest CSP evaluation.
+        context: The dict returned by assemble_farm_context().
 
     Returns:
         A string suitable for the ``content`` field of a user message in the
-        Anthropic messages API.
+        chat completions API.
     """
     farm = context["farm"]
     fields = context["fields"]
@@ -163,10 +270,13 @@ def build_user_message(context: dict) -> str:
     sections.append("=== FIELDS ===")
     if fields:
         for f in fields:
+            field_practices = (
+                ", ".join(_sanitize(str(p)) for p in (f["practices"] or [])) or "none"
+            )
             sections.append(
                 f"- Field '{_sanitize(f['name'])}' (id: {f['id']}): "
                 f"{f['acres']} acres, crop: {_sanitize(f['crop_type'])}, "
-                f"current practices: {', '.join(_sanitize(str(p)) for p in (f['practices'] or [])) or 'none'}"
+                f"current practices: {field_practices}"
             )
     else:
         sections.append("No fields registered.")
@@ -234,48 +344,12 @@ def build_user_message(context: dict) -> str:
     # -- CSP assessment context
     sections.append("=== CSP (CONSERVATION STEWARDSHIP PROGRAM) STATUS ===")
     if csp_assessment:
-        cart_score = csp_assessment.get("cart_score", 0.0)
-        csp_status = csp_assessment.get("status", "unknown")
-        concerns_met = csp_assessment.get("concerns_meeting_threshold", 0)
-        ranking_threshold = csp_assessment.get("state_ranking_threshold", 42.0)
-        gap = max(0.0, ranking_threshold - cart_score)
-        annual_payment = csp_assessment.get("estimated_annual_payment", 0.0)
-
-        sections.append(f"CSP Eligibility Status: {csp_status}")
-        sections.append(f"CART Score: {cart_score:.1f} / 100.0")
-        sections.append(f"State Ranking Threshold: {ranking_threshold:.1f}")
-        sections.append(f"Gap to ACT NOW threshold: {gap:.1f} points")
-        sections.append(f"Priority Resource Concerns meeting threshold: {concerns_met} of 2 required")
-
-        if annual_payment:
-            sections.append(f"Estimated Current Annual CSP Payment: ${annual_payment:,.2f}")
-
-        # Per-concern detail
-        resource_concerns = (
-            csp_assessment.get("resource_concerns_detail")
-            or csp_assessment.get("score_breakdown", {}).get("resource_concern_scores", [])
-        )
-        if resource_concerns:
-            sections.append("Resource Concern Scores (threshold = 50% of max points):")
-            for concern in resource_concerns:
-                threshold_indicator = "ABOVE" if concern.get("meets_threshold") else "BELOW"
-                sections.append(
-                    f"  - {concern.get('name', concern.get('concern_id', ''))}: "
-                    f"{concern.get('points_earned', 0.0):.1f} / {concern.get('points_possible', 0.0):.1f} "
-                    f"pts [{threshold_indicator} threshold]"
-                )
-
-        recommended_enhancements = csp_assessment.get("recommended_enhancements", [])
-        if recommended_enhancements:
-            sections.append(
-                f"Gap-Closure Enhancements Recommended: {', '.join(recommended_enhancements)}"
-            )
+        sections.extend(_csp_assessment_lines(csp_assessment))
     else:
         sections.append(
             "No CSP assessment available yet. When making recommendations, "
             "note which resource concern categories each practice would address "
-            "and how it could contribute to CSP eligibility. Run POST /csp/evaluate "
-            "to generate a detailed assessment."
+            "and how it could contribute to CSP eligibility."
         )
     sections.append("")
 
