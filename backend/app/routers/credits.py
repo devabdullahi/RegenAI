@@ -2,7 +2,7 @@
 Credit tracking router for RegenAI.
 
 Exposes endpoints to query EQIP and VCM eligibility records, trigger
-fresh evaluations, and assemble data for PDF report generation.
+fresh evaluations, and assemble data for a credit eligibility report.
 
 All endpoints require a valid Supabase JWT (Bearer token). The
 authenticated Supabase client passed to service functions ensures Row
@@ -11,18 +11,22 @@ farms they own.
 """
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from postgrest.exceptions import APIError
 
+from app.auth.access import assert_farm_access
 from app.auth.middleware import get_authenticated_client, get_current_user
-from app.rate_limit import limiter
 from app.models.schemas import (
     CreditEligibilityGetResponse,
     CreditEvaluateResponse,
     CreditReportResponse,
 )
+from app.rate_limit import limiter
+from app.services.credit_rules import VCM_METHOD_LABEL, CreditDataError, vcm_rules_metadata
 from app.services.eqip import evaluate_eqip_eligibility
 from app.services.vcm import estimate_vcm_credits
 
@@ -30,29 +34,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/credits", tags=["Credits"])
 
+# Rule provenance attached to every VCM section; program_name is kept for
+# existing clients and carries the same label as method_label.
+_VCM_PROVENANCE: dict = {**vcm_rules_metadata(), "program_name": VCM_METHOD_LABEL}
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# PostgREST errors plus transport failures reaching Supabase. Anything else is
+# a bug and propagates.
+_DB_ERRORS: tuple[type[Exception], ...] = (APIError, httpx.HTTPError)
 
-async def _assert_farm_access(farm_id: UUID, supabase) -> None:
-    """Raise HTTP 404 if the farm does not exist or the user cannot access it.
+# Shown when an engine cannot read its inputs or save its result. The
+# CreditDataError text names internal tables, so it is logged, not returned.
+_ENGINE_DATA_ERROR_DETAIL = (
+    "{program} evaluation could not be completed because some farm data could not "
+    "be loaded or saved. Nothing was changed. Please try again."
+)
 
-    Because the supabase client already has the user's JWT set, RLS will
-    silently filter out rows the user does not own, so a missing row is
-    sufficient signal that access is denied.
 
-    Args:
-        farm_id: UUID of the farm to check.
-        supabase: Authenticated Supabase client.
-
-    Raises:
-        HTTPException: 404 if the farm is not found or not accessible.
-    """
-    try:
-        supabase.table("farms").select("id").eq("id", str(farm_id)).single().execute()
-    except APIError:
-        raise HTTPException(status_code=404, detail="Farm not found")
+def get_utc_now() -> datetime:
+    """Current UTC time; a dependency so tests can pin the clock."""
+    return datetime.now(tz=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -68,47 +68,33 @@ async def get_credit_eligibility(
     """Return the most recent EQIP and VCM eligibility records for a farm.
 
     Reads directly from the credit_eligibility table without re-running the
-    evaluation engines. If no records exist yet, returns an empty list for
-    that program. Use POST /credits/evaluate to trigger a fresh evaluation.
-
-    Args:
-        farm_id: UUID of the farm to query.
-
-    Returns:
-        A dict with keys 'eqip' and 'vcm', each containing the latest
-        eligibility record or None if not yet evaluated.
+    evaluation engines. A program that has not been evaluated yet is returned
+    as null. Use POST /credits/evaluate to trigger a fresh evaluation.
     """
-    await _assert_farm_access(farm_id, supabase)
+    farm_id_str = str(farm_id)
+    assert_farm_access(farm_id_str, supabase)
 
     try:
         result = (
             supabase.table("credit_eligibility")
             .select("*")
-            .eq("farm_id", str(farm_id))
+            .eq("farm_id", farm_id_str)
             .order("updated_at", desc=True)
             .execute()
         )
         rows: list[dict] = result.data or []
-    except Exception:
-        logger.exception("credits: failed to fetch eligibility for farm=%s", farm_id)
+    except _DB_ERRORS as exc:
+        logger.exception("credits: failed to fetch eligibility for farm=%s", farm_id_str)
         raise HTTPException(
             status_code=500,
             detail="Failed to retrieve credit eligibility records.",
-        )
+        ) from exc
 
-    # Separate by program — return the most recent row for each
-    eqip_row: dict | None = next(
-        (r for r in rows if r.get("program") == "EQIP"), None
-    )
-    vcm_row: dict | None = next(
-        (r for r in rows if r.get("program") == "VCM"), None
-    )
+    # Rows are newest first — keep the first row seen for each program.
+    eqip_row = next((r for r in rows if r.get("program") == "EQIP"), None)
+    vcm_row = next((r for r in rows if r.get("program") == "VCM"), None)
 
-    return {
-        "farm_id": farm_id,
-        "eqip": eqip_row,
-        "vcm": vcm_row,
-    }
+    return {"farm_id": farm_id, "eqip": eqip_row, "vcm": vcm_row}
 
 
 # ---------------------------------------------------------------------------
@@ -122,50 +108,22 @@ async def evaluate_credits(
     farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
+    now: datetime = Depends(get_utc_now),
 ):
     """Trigger a fresh EQIP and VCM evaluation for a farm.
 
     Runs both eligibility engines in sequence, persists the results to the
-    credit_eligibility table, and returns both results immediately. This
-    endpoint is idempotent — repeated calls will overwrite the previous
-    results with the latest data.
-
-    Args:
-        farm_id: UUID of the farm to evaluate.
-
-    Returns:
-        A dict containing the evaluation results for both programs along
-        with summary statistics.
+    credit_eligibility table, and returns both results. Repeated calls
+    overwrite the previous results. If an engine cannot read its inputs or
+    save its result, the request fails with 500 and nothing wrong is saved.
     """
-    await _assert_farm_access(farm_id, supabase)
-
     farm_id_str = str(farm_id)
+    assert_farm_access(farm_id_str, supabase)
 
-    # Run EQIP evaluation
-    try:
-        eqip_result = await evaluate_eqip_eligibility(farm_id_str, supabase)
-    except ValueError as exc:
-        logger.warning("credits: EQIP evaluation failed for farm=%s: %s", farm_id, exc)
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        logger.exception("credits: EQIP evaluation error for farm=%s", farm_id)
-        raise HTTPException(
-            status_code=500,
-            detail="EQIP evaluation failed. Please try again.",
-        )
-
-    # Run VCM estimation
-    try:
-        vcm_result = await estimate_vcm_credits(farm_id_str, supabase)
-    except ValueError as exc:
-        logger.warning("credits: VCM evaluation failed for farm=%s: %s", farm_id, exc)
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        logger.exception("credits: VCM evaluation error for farm=%s", farm_id)
-        raise HTTPException(
-            status_code=500,
-            detail="VCM estimation failed. Please try again.",
-        )
+    eqip_result = await _run_engine(
+        "EQIP", evaluate_eqip_eligibility, farm_id_str, supabase, now
+    )
+    vcm_result = await _run_engine("VCM", estimate_vcm_credits, farm_id_str, supabase, now)
 
     return {
         "status": "evaluation_complete",
@@ -179,14 +137,36 @@ async def evaluate_credits(
         },
         "vcm": {
             "program": "VCM",
-            "program_name": vcm_result.get("program_name", "Soil Carbon Protocol"),
             "eligibility_status": vcm_result.get("status"),
-            "estimated_total_credits": vcm_result.get("estimated_total_credits", 0.0),
             "practices_documented": vcm_result.get("practices_documented", []),
-            "field_breakdown": vcm_result.get("field_breakdown", []),
             "notes": vcm_result.get("notes", ""),
             "updated_at": vcm_result.get("updated_at"),
+            **_vcm_detail_fields(vcm_result),
         },
+    }
+
+
+async def _run_engine(program: str, engine, farm_id: str, supabase, now: datetime) -> dict:
+    """Run one credit engine, mapping data failures to HTTP 500.
+
+    Engines wrap database failures in CreditDataError; any other exception is
+    a bug and propagates to FastAPI's 500 handler.
+    """
+    try:
+        return await engine(farm_id, supabase, now=now)
+    except CreditDataError as exc:
+        logger.error("credits: %s evaluation data error farm=%s: %s", program, farm_id, exc)
+        raise HTTPException(
+            status_code=500, detail=_ENGINE_DATA_ERROR_DETAIL.format(program=program)
+        ) from exc
+
+
+def _vcm_detail_fields(vcm_result: dict) -> dict:
+    """VCM estimate fields plus rule provenance, shared by evaluate and report."""
+    return {
+        "estimated_total_credits": vcm_result.get("estimated_total_credits", 0.0),
+        "field_breakdown": vcm_result.get("field_breakdown", []),
+        **_VCM_PROVENANCE,
     }
 
 
@@ -199,51 +179,36 @@ async def get_credit_report(
     farm_id: UUID,
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
+    now: datetime = Depends(get_utc_now),
 ):
-    """Assemble all data required for a credit eligibility PDF report.
+    """Assemble all data required for a credit eligibility report.
 
-    Fetches the farm profile, field inventory, and the latest EQIP/VCM
-    evaluations in a single response. The VCM result is re-evaluated live
-    to include the full per-field breakdown (not stored in the DB). If no
-    credit records exist yet, the report will note that an evaluation must
-    be triggered first.
+    Returns the farm profile, field inventory, and the latest EQIP/VCM
+    evaluations as structured data for the frontend to render.
 
-    This endpoint intentionally returns raw data rather than a PDF so that
-    the PDF renderer (WeasyPrint, added in a future iteration) can be
-    swapped or templated independently.
+    Side effect: when a VCM record already exists, this GET re-runs the VCM
+    estimator to rebuild the per-field breakdown (which is not stored). That
+    re-run upserts credit_eligibility, so the stored VCM row's status, notes
+    and updated_at are refreshed from current data on every report request.
 
-    Args:
-        farm_id: UUID of the farm.
-
-    Returns:
-        A structured dict ready for report templating, containing farm
-        metadata, field list, EQIP eligibility, VCM credit estimate, and
-        a generated_at timestamp.
+    Reads that fail are reported in ``data_warnings`` rather than hidden: the
+    affected section is returned empty or as the stored record so the rest of
+    the report remains usable.
     """
     farm_id_str = str(farm_id)
-    await _assert_farm_access(farm_id, supabase)
+    assert_farm_access(farm_id_str, supabase)
+    data_warnings: list[str] = []
 
-    # ------------------------------------------------------------------
-    # Farm profile
-    # ------------------------------------------------------------------
     try:
-        farm_result = (
-            supabase.table("farms")
-            .select("*")
-            .eq("id", farm_id_str)
-            .single()
-            .execute()
-        )
-        farm: dict = farm_result.data or {}
-    except APIError:
+        farm_rows = supabase.table("farms").select("*").eq("id", farm_id_str).limit(1).execute()
+    except _DB_ERRORS as exc:
+        logger.exception("credits/report: failed to fetch farm=%s", farm_id_str)
+        raise HTTPException(status_code=500, detail="Failed to retrieve farm data.") from exc
+    if not farm_rows.data:
         raise HTTPException(status_code=404, detail="Farm not found")
-    except Exception:
-        logger.exception("credits/report: failed to fetch farm=%s", farm_id)
-        raise HTTPException(status_code=500, detail="Failed to retrieve farm data.")
+    farm: dict = farm_rows.data[0]
 
-    # ------------------------------------------------------------------
-    # Fields
-    # ------------------------------------------------------------------
+    fields: list[dict] = []
     try:
         fields_result = (
             supabase.table("fields")
@@ -251,56 +216,46 @@ async def get_credit_report(
             .eq("farm_id", farm_id_str)
             .execute()
         )
-        fields: list[dict] = fields_result.data or []
-    except Exception:
-        logger.exception("credits/report: failed to fetch fields for farm=%s", farm_id)
-        fields = []
+        fields = fields_result.data or []
+    except _DB_ERRORS:
+        logger.exception("credits/report: failed to fetch fields for farm=%s", farm_id_str)
+        data_warnings.append("Field list could not be loaded; the fields section is incomplete.")
 
-    # ------------------------------------------------------------------
-    # Stored EQIP record (read-only — no re-evaluation here)
-    # ------------------------------------------------------------------
     eqip_record: dict | None = None
     vcm_record: dict | None = None
-
+    eligibility_loaded = True
     try:
         eligibility_result = (
-            supabase.table("credit_eligibility")
-            .select("*")
-            .eq("farm_id", farm_id_str)
-            .execute()
+            supabase.table("credit_eligibility").select("*").eq("farm_id", farm_id_str).execute()
         )
         for row in eligibility_result.data or []:
             if row.get("program") == "EQIP":
                 eqip_record = row
             elif row.get("program") == "VCM":
                 vcm_record = row
-    except Exception:
+    except _DB_ERRORS:
+        eligibility_loaded = False
         logger.exception(
-            "credits/report: failed to fetch credit_eligibility for farm=%s", farm_id
+            "credits/report: failed to fetch credit_eligibility for farm=%s", farm_id_str
+        )
+        data_warnings.append(
+            "Stored EQIP and VCM results could not be loaded; program sections are incomplete."
         )
 
-    # ------------------------------------------------------------------
-    # Re-run VCM estimator to get the full per-field breakdown
-    # (stored notes row lacks the breakdown detail)
-    # ------------------------------------------------------------------
     vcm_detail: dict | None = None
     if vcm_record:
         try:
-            vcm_detail = await estimate_vcm_credits(farm_id_str, supabase)
-        except Exception:
-            logger.exception(
-                "credits/report: VCM re-estimation failed for farm=%s", farm_id
+            vcm_detail = await estimate_vcm_credits(farm_id_str, supabase, now=now)
+        except CreditDataError:
+            logger.exception("credits/report: VCM re-estimation failed for farm=%s", farm_id_str)
+            data_warnings.append(
+                "VCM estimate could not be recalculated; showing the stored result "
+                "without a per-field breakdown."
             )
-            vcm_detail = vcm_record  # Fall back to stored record without breakdown
 
-    # ------------------------------------------------------------------
-    # Assemble report payload
-    # ------------------------------------------------------------------
-    from datetime import datetime, timezone
-
-    report = {
+    return {
         "report_type": "credit_eligibility",
-        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "generated_at": now.isoformat(),
         "farm": {
             "id": farm.get("id"),
             "name": farm.get("name"),
@@ -319,49 +274,54 @@ async def get_credit_report(
             }
             for f in fields
         ],
-        "eqip": (
-            {
-                "status": eqip_record.get("status"),
-                "practices_documented": eqip_record.get("practices_documented", []),
-                "notes": eqip_record.get("notes", ""),
-                "updated_at": eqip_record.get("updated_at"),
-            }
-            if eqip_record
-            else {
-                "status": None,
-                "notes": "EQIP evaluation has not been run yet. "
-                "Call POST /credits/evaluate to generate eligibility data.",
-            }
-        ),
-        "vcm": (
-            {
-                "status": vcm_detail.get("status") if vcm_detail else None,
-                "program_name": "Soil Carbon Protocol",
-                "estimated_total_credits": (
-                    vcm_detail.get("estimated_total_credits", 0.0)
-                    if vcm_detail
-                    else 0.0
-                ),
-                "practices_documented": (
-                    vcm_detail.get("practices_documented", []) if vcm_detail else []
-                ),
-                "field_breakdown": (
-                    vcm_detail.get("field_breakdown", []) if vcm_detail else []
-                ),
-                "notes": vcm_detail.get("notes", "") if vcm_detail else "",
-                "updated_at": (
-                    vcm_detail.get("updated_at") if vcm_detail else None
-                ),
-            }
-            if vcm_record
-            else {
-                "status": None,
-                "program_name": "Soil Carbon Protocol",
-                "estimated_total_credits": 0.0,
-                "notes": "VCM evaluation has not been run yet. "
-                "Call POST /credits/evaluate to generate credit estimates.",
-            }
-        ),
+        "eqip": _eqip_report_section(eqip_record, eligibility_loaded),
+        "vcm": _vcm_report_section(vcm_record, vcm_detail, eligibility_loaded),
+        "data_warnings": data_warnings,
     }
 
-    return report
+
+def _eqip_report_section(record: dict | None, loaded: bool) -> dict:
+    if record is None:
+        return {"status": None, "notes": _not_evaluated_note("EQIP", "eligibility data", loaded)}
+    return {
+        "status": record.get("status"),
+        "practices_documented": record.get("practices_documented", []),
+        "notes": record.get("notes", ""),
+        "updated_at": record.get("updated_at"),
+    }
+
+
+def _vcm_report_section(record: dict | None, detail: dict | None, loaded: bool) -> dict:
+    if record is None:
+        return {
+            "status": None,
+            "estimated_total_credits": 0.0,
+            "notes": _not_evaluated_note("VCM", "credit estimates", loaded),
+            **_VCM_PROVENANCE,
+        }
+    if detail is None:
+        # Re-estimation failed: fall back to the stored row, which has no breakdown.
+        return {
+            "status": record.get("status"),
+            "practices_documented": record.get("practices_documented", []),
+            "notes": record.get("notes", ""),
+            "updated_at": record.get("updated_at"),
+            "estimated_total_credits": None,
+            **_VCM_PROVENANCE,
+        }
+    return {
+        "status": detail.get("status"),
+        "practices_documented": detail.get("practices_documented", []),
+        "notes": detail.get("notes", ""),
+        "updated_at": detail.get("updated_at"),
+        **_vcm_detail_fields(detail),
+    }
+
+
+def _not_evaluated_note(program: str, generates: str, loaded: bool) -> str:
+    if not loaded:
+        return f"{program} results could not be loaded. Try again shortly."
+    return (
+        f"{program} evaluation has not been run yet. "
+        f"Call POST /credits/evaluate to generate {generates}."
+    )

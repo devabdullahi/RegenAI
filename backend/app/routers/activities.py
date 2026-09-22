@@ -73,7 +73,8 @@ async def log_activity(
         body: Activity payload.
 
     Returns:
-        Newly created ActivityResponse.
+        Newly created ActivityResponse. Non-fatal problems (e.g. harvest saved
+        but yield history not synced) are listed in ``warnings``.
 
     Raises:
         HTTPException 404: Field not found.
@@ -85,7 +86,7 @@ async def log_activity(
         logger.info(
             "activities.log_activity: id=%s warnings=%s", row.get("id"), warnings
         )
-    return row
+    return {**row, "warnings": warnings}
 
 
 @router.get("/activities", response_model=ActivityListResponse)
@@ -122,8 +123,8 @@ async def list_field_activities(
             status_code=422, detail="start_date cannot be after end_date."
         )
 
-    result = await list_activities(
-        field_id=field_id,
+    return await list_activities(
+        field_id=str(field_id),
         supabase=supabase,
         activity_type=activity_type.value if activity_type else None,
         start_date=start_date,
@@ -131,7 +132,6 @@ async def list_field_activities(
         limit=limit,
         offset=offset,
     )
-    return result
 
 
 @router.get("/activities/summary")
@@ -156,7 +156,7 @@ async def activity_summary(
         HTTPException 404: Farm not found.
         HTTPException 500: Database error.
     """
-    return await get_activity_summary(farm_id, supabase)
+    return await get_activity_summary(str(farm_id), supabase)
 
 
 @router.get("/activities/{activity_id}", response_model=ActivityResponse)
@@ -176,7 +176,7 @@ async def get_single_activity(
     Raises:
         HTTPException 404: Activity not found or not accessible.
     """
-    return await get_activity(activity_id, supabase)
+    return await get_activity(str(activity_id), supabase)
 
 
 @router.patch("/activities/{activity_id}", response_model=ActivityResponse)
@@ -204,7 +204,7 @@ async def patch_activity(
         HTTPException 422: Business rule violation.
         HTTPException 500: Database error.
     """
-    return await update_activity(activity_id, body, supabase)
+    return await update_activity(str(activity_id), body, supabase)
 
 
 @router.delete("/activities/{activity_id}", status_code=204)
@@ -225,7 +225,7 @@ async def remove_activity(
         HTTPException 404: Activity not found.
         HTTPException 500: Database error.
     """
-    await delete_activity(activity_id, supabase)
+    await delete_activity(str(activity_id), supabase)
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ async def get_yield_history(
         HTTPException 404: Field not found.
         HTTPException 500: Database error.
     """
-    return await list_yield_history(field_id, supabase)
+    return await list_yield_history(str(field_id), supabase)
 
 
 @router.get("/yield-history/aph", response_model=APHResponse)
@@ -302,4 +302,4 @@ async def get_aph(
         HTTPException 422: Fewer than 4 years of yield data available.
         HTTPException 500: Database error.
     """
-    return await calculate_aph(field_id, supabase)
+    return await calculate_aph(str(field_id), supabase)
