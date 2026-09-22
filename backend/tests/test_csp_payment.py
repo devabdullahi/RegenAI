@@ -1,63 +1,106 @@
 """
-Tests for app.services.csp_payment — EAP + EnAP payment estimation.
+Tests for app.services.csp_payment and app.services.program_rules (FY2026 rules).
 
 Coverage targets:
-  - EAP calculation formula (base rate × concern multiplier × acres)
-  - EAP zero when concerns_meeting_threshold < 1
-  - EnAP calculation with and without bundle premium (115% vs 100%)
-  - Payment caps: $4k minimum floor, $50k annual max, $200k contract max
-  - State-specific EAP rate lookups (cropland and pasture)
-  - Per-field breakdown proportional to field acres
+  - Program rules: contract limits by fiscal year / joint operation, EAP
+    $4,000/contract/yr, no annual payment limit, citation metadata
+  - EAP is a fixed per-contract payment (not a floor, not per-acre)
+  - Activity payments: per-acre estimates, no bundle premium, E-code mapping
+  - Contract limit caps only the 5-year total; no annual cap
   - estimate_csp_payments() full integration (mocked Supabase)
-  - get_recommended_enhancements() ranked output shape
+  - get_recommended_enhancements() ranked output shape (practice-standard codes)
 """
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from postgrest.exceptions import APIError
+
 from tests.conftest import make_supabase_mock, FARM_ID, FIELD_ID_A, FIELD_ID_B
 
+from app.services import program_rules
+from app.services.program_rules import (
+    CSP_ANNUAL_PAYMENT_LIMIT,
+    CSP_EXISTING_ACTIVITY_PAYMENT,
+    NB_440_26_2_AS_OF,
+    NB_440_26_2_URL,
+    csp_contract_limit,
+    csp_rules_metadata,
+)
 from app.services.csp_payment import (
-    _eap_rate,
-    _calculate_eap,
-    _calculate_enap,
-    _apply_payment_caps,
-    _EAP_RATES_CROPLAND,
-    _EAP_RATES_PASTURE,
-    _ENHANCEMENT_COSTS_PER_ACRE,
-    _MIN_ANNUAL_PAYMENT,
-    _MAX_ANNUAL_PAYMENT,
-    _MAX_CONTRACT_PAYMENT,
     _CONTRACT_YEARS,
-    _BUNDLE_THRESHOLD,
+    _CSP_ACTIVITIES,
+    _DEFAULT_ACTIVITY_CODES,
+    _EXISTING_ACTIVITY_PAYMENT,
+    _apply_contract_limit,
+    _calculate_activity_payments,
+    _calculate_eap,
     estimate_csp_payments,
     get_recommended_enhancements,
+    normalize_activity_code,
 )
 
 
 # ---------------------------------------------------------------------------
-# Unit: _eap_rate
+# Program rules
 # ---------------------------------------------------------------------------
 
-class TestEapRate:
-    def test_known_cropland_state(self):
-        assert _eap_rate("IA", "cropland") == 19.25
-        assert _eap_rate("IL", "cropland") == 18.50
+class TestProgramRules:
+    def test_fy2026_individual_limit_is_300k(self):
+        limit = csp_contract_limit(2026, joint_operation=False)
+        assert limit["amount"] == 300_000.0
+        assert limit["rules_period"] == "FY2026+"
+        assert limit["applies_to"] == "individual_or_entity"
+        assert limit["label"] == "$300,000 contract limit (FY2026+)"
 
-    def test_known_pasture_state(self):
-        assert _eap_rate("IA", "pasture") == 11.50
-        assert _eap_rate("IL", "pasture") == 11.00
+    def test_fy2026_joint_limit_is_600k(self):
+        limit = csp_contract_limit(2026, joint_operation=True)
+        assert limit["amount"] == 600_000.0
+        assert limit["applies_to"] == "joint_operation"
 
-    def test_unknown_state_returns_default_cropland(self):
-        assert _eap_rate("TX", "cropland") == _EAP_RATES_CROPLAND["_default"]
+    def test_later_fiscal_years_use_fy2026_limits(self):
+        assert csp_contract_limit(2028)["amount"] == 300_000.0
 
-    def test_unknown_state_returns_default_pasture(self):
-        assert _eap_rate("TX", "pasture") == _EAP_RATES_PASTURE["_default"]
+    def test_pre_fy2026_individual_limit_is_200k(self):
+        limit = csp_contract_limit(2025, joint_operation=False)
+        assert limit["amount"] == 200_000.0
+        assert limit["rules_period"] == "pre-FY2026"
 
-    def test_case_insensitive_state(self):
-        assert _eap_rate("ia") == _eap_rate("IA")
+    def test_pre_fy2026_joint_limit_is_400k(self):
+        assert csp_contract_limit(2024, joint_operation=True)["amount"] == 400_000.0
 
-    def test_default_land_use_is_cropland(self):
-        assert _eap_rate("IA") == _eap_rate("IA", "cropland")
+    def test_default_contract_is_new_fy2026(self):
+        assert csp_contract_limit()["amount"] == 300_000.0
+
+    def test_eap_is_4000_per_contract_per_year(self):
+        assert CSP_EXISTING_ACTIVITY_PAYMENT.value == 4_000.0
+        assert CSP_EXISTING_ACTIVITY_PAYMENT.unit == "usd_per_contract_per_year"
+
+    def test_no_annual_payment_limit(self):
+        assert CSP_ANNUAL_PAYMENT_LIMIT.value is None
+
+    def test_every_rule_has_as_of_and_source(self):
+        rules = [
+            v for v in vars(program_rules).values()
+            if isinstance(v, program_rules.RuleValue)
+        ]
+        assert rules, "expected RuleValue constants"
+        for rule in rules:
+            assert rule.as_of, rule.key
+            assert rule.source_url, rule.key
+
+    def test_limit_cites_bulletin(self):
+        limit = csp_contract_limit()
+        assert limit["as_of"] == NB_440_26_2_AS_OF == "2025-12-17"
+        assert limit["source_url"] == NB_440_26_2_URL
+
+    def test_rules_metadata_shape(self):
+        meta = csp_rules_metadata(2026, joint_operation=True)
+        assert meta["as_of"] == "2025-12-17"
+        assert meta["source_url"] == NB_440_26_2_URL
+        assert meta["annual_payment_limit"] is None
+        assert meta["contract_limit"]["amount"] == 600_000.0
+        assert meta["existing_activity_payment"]["amount"] == 4_000.0
+        assert meta["activity_rates"]["status"] == "estimate"
+        assert "pending FY2026 state payment schedule" in meta["activity_rates"]["basis"]
 
 
 # ---------------------------------------------------------------------------
@@ -65,162 +108,138 @@ class TestEapRate:
 # ---------------------------------------------------------------------------
 
 class TestCalculateEap:
-    def test_zero_concerns_returns_zero(self):
-        eap, rate = _calculate_eap(100.0, 0, "IA")
-        assert eap == 0.0
-        assert rate == 0.0
+    def test_fixed_4000_when_contract_possible(self):
+        assert _calculate_eap(2) == 4_000.0
 
-    def test_negative_concerns_returns_zero(self):
-        eap, rate = _calculate_eap(100.0, -1, "IA")
-        assert eap == 0.0
+    def test_does_not_scale_with_concerns(self):
+        assert _calculate_eap(5) == _calculate_eap(2) == _EXISTING_ACTIVITY_PAYMENT
 
-    def test_one_concern_uses_base_rate(self):
-        """1 concern → no multiplier uplift, effective_rate == base_rate."""
-        base = _eap_rate("IA", "cropland")  # 19.25
-        eap, rate = _calculate_eap(100.0, 1, "IA")
-        assert rate == pytest.approx(base, abs=0.001)
-        assert eap == pytest.approx(base * 100.0, abs=0.01)
-
-    def test_two_concerns_adds_25_pct_uplift(self):
-        """2 concerns → effective_rate = base × 1.25."""
-        base = _eap_rate("IA", "cropland")
-        eap, rate = _calculate_eap(100.0, 2, "IA")
-        expected_rate = base * 1.25
-        assert rate == pytest.approx(expected_rate, abs=0.001)
-        assert eap == pytest.approx(expected_rate * 100.0, abs=0.01)
-
-    def test_three_concerns_adds_50_pct_uplift(self):
-        base = _eap_rate("IA", "cropland")
-        eap, rate = _calculate_eap(100.0, 3, "IA")
-        expected_rate = base * 1.50
-        assert rate == pytest.approx(expected_rate, abs=0.001)
-
-    def test_scales_linearly_with_acres(self):
-        eap_100, _ = _calculate_eap(100.0, 2, "IL")
-        eap_200, _ = _calculate_eap(200.0, 2, "IL")
-        assert eap_200 == pytest.approx(eap_100 * 2.0, abs=0.01)
-
-    def test_pasture_rate_used_when_specified(self):
-        cropland_eap, _ = _calculate_eap(100.0, 1, "IA", "cropland")
-        pasture_eap, _ = _calculate_eap(100.0, 1, "IA", "pasture")
-        assert pasture_eap < cropland_eap
-
-    def test_zero_acres_returns_zero_payment(self):
-        eap, rate = _calculate_eap(0.0, 3, "IA")
-        assert eap == 0.0
+    def test_zero_below_two_concerns(self):
+        assert _calculate_eap(1) == 0.0
+        assert _calculate_eap(0) == 0.0
+        assert _calculate_eap(-1) == 0.0
 
 
 # ---------------------------------------------------------------------------
-# Unit: _calculate_enap
+# Unit: activity catalog & payments
 # ---------------------------------------------------------------------------
 
-class TestCalculateEnap:
-    def test_no_enhancements_returns_zero(self):
-        enap, is_bundle = _calculate_enap([], 100.0)
-        assert enap == 0.0
-        assert is_bundle is False
+class TestActivityCatalog:
+    def test_no_e_codes_in_catalog(self):
+        for code in _CSP_ACTIVITIES:
+            assert not code.startswith("E"), code
 
-    def test_single_enhancement_no_bundle_rate(self):
-        """1 enhancement → 100% rate."""
-        cost = _ENHANCEMENT_COSTS_PER_ACRE["E340A"]  # 35.00
-        enap, is_bundle = _calculate_enap(["E340A"], 100.0)
-        assert is_bundle is False
-        assert enap == pytest.approx(cost * 100.0, abs=0.01)
+    def test_codes_keyed_by_practice_standard(self):
+        for code, activity in _CSP_ACTIVITIES.items():
+            assert code.split("-")[0] == activity.practice_standard_code
+            assert activity.practice_standard_code.isdigit()
 
-    def test_two_enhancements_no_bundle_rate(self):
-        """2 enhancements → still 100% (below bundle threshold)."""
-        total_cost = (
-            _ENHANCEMENT_COSTS_PER_ACRE["E340A"] +
-            _ENHANCEMENT_COSTS_PER_ACRE["E590A"]
-        )  # 35 + 10 = 45
-        enap, is_bundle = _calculate_enap(["E340A", "E590A"], 100.0)
-        assert is_bundle is False
-        assert enap == pytest.approx(total_cost * 100.0, abs=0.01)
+    def test_activities_come_from_single_catalog(self):
+        """Payment activities are the catalog entries that carry a rate."""
+        expected = {
+            code
+            for code, practice in program_rules.CSP_PRACTICE_CATALOG.items()
+            if practice.estimated_rate_per_acre is not None
+        }
+        assert set(_CSP_ACTIVITIES) == expected
+        for code, activity in _CSP_ACTIVITIES.items():
+            assert activity is program_rules.CSP_PRACTICE_CATALOG[code]
 
-    def test_three_enhancements_triggers_bundle_115_pct(self):
-        """3 enhancements → 115% bundle rate."""
-        codes = ["E340A", "E590A", "E328A"]
-        total_cost = sum(_ENHANCEMENT_COSTS_PER_ACRE[c] for c in codes)
-        enap, is_bundle = _calculate_enap(codes, 100.0)
-        assert is_bundle is True
-        assert enap == pytest.approx(total_cost * 100.0 * 1.15, abs=0.01)
+    def test_higher_payment_categories_flagged(self):
+        flagged = {
+            a.higher_payment_category
+            for a in _CSP_ACTIVITIES.values()
+            if a.higher_payment_category
+        }
+        assert flagged == {"cover_crop", "agm", "rccr", "irccr"}
+        assert _CSP_ACTIVITIES["340"].higher_payment_category == "cover_crop"
+        assert _CSP_ACTIVITIES["328-RCCR"].higher_payment_category == "rccr"
+        assert _CSP_ACTIVITIES["328-IRCCR"].higher_payment_category == "irccr"
+        assert _CSP_ACTIVITIES["528"].higher_payment_category == "agm"
 
-    def test_four_enhancements_also_bundle(self):
-        codes = ["E340A", "E590A", "E328A", "E329A"]
-        _, is_bundle = _calculate_enap(codes, 100.0)
-        assert is_bundle is True
+    def test_legacy_e_codes_map_to_activities(self):
+        assert normalize_activity_code("E340A") == "340"
+        assert normalize_activity_code("e328b") == "328-IRCCR"
+        assert normalize_activity_code("E449A") == "554"
+        assert normalize_activity_code("340") == "340"
+        assert normalize_activity_code("E412A") is None
+        assert normalize_activity_code("NOPE") is None
 
-    def test_bundle_threshold_is_three(self):
-        assert _BUNDLE_THRESHOLD == 3
+
+class TestCalculateActivityPayments:
+    def test_empty_returns_zero(self):
+        total, items = _calculate_activity_payments([], 100.0)
+        assert total == 0.0
+        assert items == []
+
+    def test_single_activity(self):
+        rate = _CSP_ACTIVITIES["340"].estimated_rate_per_acre
+        total, items = _calculate_activity_payments(["340"], 100.0)
+        assert total == pytest.approx(rate * 100.0, abs=0.01)
+        assert items[0]["rate_is_estimate"] is True
+        assert items[0]["higher_payment"] is True
+
+    def test_no_bundle_premium_for_three_or_more(self):
+        codes = ["340", "590", "328-RCCR"]
+        expected = sum(_CSP_ACTIVITIES[c].estimated_rate_per_acre for c in codes) * 100.0
+        total, _ = _calculate_activity_payments(codes, 100.0)
+        assert total == pytest.approx(expected, abs=0.01)
+
+    def test_unknown_code_contributes_zero(self):
+        known, _ = _calculate_activity_payments(["340"], 100.0)
+        with_unknown, items = _calculate_activity_payments(["340", "XXXX"], 100.0)
+        assert with_unknown == pytest.approx(known, abs=0.01)
+        assert len(items) == 1
+
+    def test_legacy_code_and_duplicate_collapsed(self):
+        total, items = _calculate_activity_payments(["E340A", "340"], 100.0)
+        assert [i["code"] for i in items] == ["340"]
 
     def test_scales_with_acres(self):
-        enap_100, _ = _calculate_enap(["E340A", "E590A", "E328A"], 100.0)
-        enap_200, _ = _calculate_enap(["E340A", "E590A", "E328A"], 200.0)
-        assert enap_200 == pytest.approx(enap_100 * 2.0, abs=0.01)
-
-    def test_unknown_enhancement_code_contributes_zero(self):
-        enap_known, _ = _calculate_enap(["E340A"], 100.0)
-        enap_unknown, _ = _calculate_enap(["E340A", "EXXXX"], 100.0)
-        assert enap_unknown == pytest.approx(enap_known, abs=0.01)
-
-    def test_zero_acres_returns_zero(self):
-        enap, _ = _calculate_enap(["E340A", "E590A", "E328A"], 0.0)
-        assert enap == 0.0
+        t100, _ = _calculate_activity_payments(_DEFAULT_ACTIVITY_CODES, 100.0)
+        t200, _ = _calculate_activity_payments(_DEFAULT_ACTIVITY_CODES, 200.0)
+        assert t200 == pytest.approx(t100 * 2.0, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
-# Unit: _apply_payment_caps
+# Unit: _apply_contract_limit
 # ---------------------------------------------------------------------------
 
-class TestApplyPaymentCaps:
-    def test_zero_payment_stays_zero(self):
-        capped, five_year, was_capped = _apply_payment_caps(0.0)
-        assert capped == 0.0
-        assert five_year == 0.0
-        assert was_capped is False
+class TestApplyContractLimit:
+    def test_zero_stays_zero(self):
+        assert _apply_contract_limit(0.0, 300_000.0) == (0.0, 0.0, False)
 
-    def test_minimum_floor_applied(self):
-        """Any positive payment below $4k should be raised to $4k."""
-        capped, five_year, was_capped = _apply_payment_caps(1_000.0)
-        assert capped == _MIN_ANNUAL_PAYMENT
-        assert five_year == _MIN_ANNUAL_PAYMENT * _CONTRACT_YEARS
-        assert was_capped is False  # min floor is applied but not flagged as "capped"
+    def test_no_minimum_floor(self):
+        """Old $4,000 floor semantics are gone: small payments stay small."""
+        annual, five_year, capped = _apply_contract_limit(1_000.0, 300_000.0)
+        assert annual == 1_000.0
+        assert five_year == 5_000.0
+        assert capped is False
 
-    def test_payment_exactly_at_minimum_unchanged(self):
-        capped, five_year, was_capped = _apply_payment_caps(_MIN_ANNUAL_PAYMENT)
-        assert capped == _MIN_ANNUAL_PAYMENT
-        assert five_year == _MIN_ANNUAL_PAYMENT * _CONTRACT_YEARS
+    def test_no_annual_cap_above_50k(self):
+        """$55k/yr was capped to $50k under old rules; FY2026 has no annual limit."""
+        annual, five_year, capped = _apply_contract_limit(55_000.0, 300_000.0)
+        assert annual == 55_000.0
+        assert five_year == 275_000.0
+        assert capped is False
 
-    def test_payment_between_min_and_max_unchanged(self):
-        capped, five_year, _ = _apply_payment_caps(25_000.0)
-        assert capped == 25_000.0
-        assert five_year == 125_000.0
+    def test_five_year_capped_at_fy2026_limit(self):
+        annual, five_year, capped = _apply_contract_limit(70_000.0, 300_000.0)
+        assert annual == 70_000.0
+        assert five_year == 300_000.0
+        assert capped is True
 
-    def test_maximum_annual_cap_applied(self):
-        """$60k input capped to $50k annual. 5-year total capped at $200k."""
-        capped, five_year, was_capped = _apply_payment_caps(60_000.0)
-        assert capped == _MAX_ANNUAL_PAYMENT
-        assert five_year == _MAX_CONTRACT_PAYMENT  # 50k*5=250k > 200k → capped
-        assert was_capped is True
+    def test_joint_limit_allows_higher_total(self):
+        _, five_year, capped = _apply_contract_limit(70_000.0, 600_000.0)
+        assert five_year == 350_000.0
+        assert capped is False
 
-    def test_five_year_cap_independent_of_annual(self):
-        """$45k annual is below $50k annual cap, but $45k*5=$225k > $200k contract cap."""
-        capped, five_year, was_capped = _apply_payment_caps(45_000.0)
-        assert capped == 45_000.0  # annual stays at $45k (below $50k cap)
-        assert five_year == _MAX_CONTRACT_PAYMENT  # 5-year capped at $200k
-        assert was_capped is True
+    def test_pre_fy2026_limit(self):
+        _, five_year, capped = _apply_contract_limit(45_000.0, 200_000.0)
+        assert five_year == 200_000.0
+        assert capped is True
 
-    def test_payment_at_exactly_max_annual(self):
-        """$50k annual stays at $50k. 5-year capped at $200k (not $250k)."""
-        capped, five_year, was_capped = _apply_payment_caps(_MAX_ANNUAL_PAYMENT)
-        assert capped == _MAX_ANNUAL_PAYMENT
-        assert five_year == _MAX_CONTRACT_PAYMENT
-        assert was_capped is True
-
-    def test_contract_max_constants(self):
-        assert _MIN_ANNUAL_PAYMENT == 4_000.0
-        assert _MAX_ANNUAL_PAYMENT == 50_000.0
-        assert _MAX_CONTRACT_PAYMENT == 200_000.0
+    def test_contract_years(self):
         assert _CONTRACT_YEARS == 5
 
 
@@ -228,172 +247,235 @@ class TestApplyPaymentCaps:
 # Integration: estimate_csp_payments
 # ---------------------------------------------------------------------------
 
+def _supabase(farm_row, field_rows, concerns_meeting=2):
+    assessment = {"rc_count_above_threshold": concerns_meeting, "stewardship_score": 40.0}
+    return make_supabase_mock(
+        {
+            "farms": {"data": farm_row},
+            "fields": {"data": field_rows},
+            "csp_eligibility_assessments": {"data": assessment},
+            "csp_enhancement_activities": {"data": []},
+        }
+    )
+
+
 @pytest.mark.asyncio
 class TestEstimateCspPayments:
 
-    def _base_supabase(self, farm_row, field_rows, concerns_meeting=2):
-        """Build a supabase mock with assessment data for the given concern count."""
-        assessment = {"concerns_meeting_threshold": concerns_meeting, "cart_score": 40.0}
-        return make_supabase_mock(
-            {
-                "farms": {"data": farm_row},
-                "fields": {"data": field_rows},
-                # Must match the actual table name used in csp_payment.py line 344
-                "csp_eligibility_assessments": {"data": assessment},
-                "csp_enhancement_activities": {"data": []},
-            }
-        )
-
     async def test_returns_required_keys(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
         required = {
-            "farm_id", "eligible_acres", "eap_annual", "eap_rate_per_acre",
-            "resource_concerns_addressed", "enap_annual", "enap_is_bundle",
-            "enhancement_codes_included", "total_annual_payment",
-            "total_5year_payment", "payment_capped", "field_breakdown",
-            "state", "estimated_at",
+            "farm_id", "eligible_acres", "resource_concerns_addressed",
+            "eap_annual", "activity_payment_annual", "activities_included",
+            "total_annual_payment", "total_5year_payment", "contract_years",
+            "contract_fiscal_year", "joint_operation", "contract_limit",
+            "annual_payment_limit", "payment_capped", "field_breakdown",
+            "state", "rules", "estimated_at",
         }
         assert required.issubset(result.keys())
+        for legacy in ("enap_annual", "enap_is_bundle", "enhancement_codes_included"):
+            assert legacy not in result
 
-    async def test_farm_id_in_response(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["farm_id"] == FARM_ID
+    async def test_validates_against_schema(self, farm_row, field_rows):
+        from app.models.schemas import CSPPaymentEstimate
 
-    async def test_state_from_farm_record(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["state"] == "IA"
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        est = CSPPaymentEstimate(**result)
+        assert est.contract_limit.amount == 300_000.0
+        assert est.annual_payment_limit is None
 
-    async def test_eligible_acres_matches_farm_total(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["eligible_acres"] == farm_row["total_acres"]
+    async def test_state_without_ranking_threshold_still_estimates(self, field_rows):
+        """A state with no published ranking threshold must not break payments.
 
-    async def test_eap_positive_with_two_concerns(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows, concerns_meeting=2)
+        With no persisted assessment the estimator falls back to the scoring
+        engine, which now returns a None ranking threshold for such states.
+        """
+        supabase = make_supabase_mock(
+            {
+                "farms": {"data": {"id": FARM_ID, "state": "TX", "total_acres": 100.0}},
+                "fields": {"data": field_rows},
+                "csp_eligibility_assessments": {"data": None},
+                "csp_enhancement_activities": {"data": []},
+                "soil_profiles": {"data": []},
+                "recommendations": {"data": []},
+            }
+        )
         result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["eap_annual"] > 0.0
-
-    async def test_eap_zero_with_no_concerns(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows, concerns_meeting=0)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["eap_annual"] == 0.0
-
-    async def test_default_fallback_enhancements_give_bundle(self, farm_row, field_rows):
-        """When DB has no enhancement rows, fallback codes ['E340A','E590A','E328A']
-        is 3 codes → should trigger bundle premium."""
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        # 3 fallback codes → bundle
-        assert result["enap_is_bundle"] is True
-
-    async def test_total_annual_equals_eap_plus_enap_or_capped(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        raw_sum = result["eap_annual"] + result["enap_annual"]
-        # After capping, total_annual_payment must be <= MAX_ANNUAL_PAYMENT
-        assert result["total_annual_payment"] <= _MAX_ANNUAL_PAYMENT
-        # And total should be at least min(raw_sum, MAX) — just verify non-negative
+        assert result["state"] == "TX"
         assert result["total_annual_payment"] >= 0.0
 
-    async def test_five_year_total_is_annual_times_5(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        expected = round(result["total_annual_payment"] * _CONTRACT_YEARS, 2)
-        assert result["total_5year_payment"] == pytest.approx(expected, abs=0.01)
+    async def test_farm_state_and_acres(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        assert result["farm_id"] == FARM_ID
+        assert result["state"] == "IA"
+        assert result["eligible_acres"] == farm_row["total_acres"]
 
-    async def test_field_breakdown_count_matches_fields(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
+    async def test_eap_is_fixed_4000(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows, 2))
+        assert result["eap_annual"] == 4_000.0
+
+    async def test_eap_zero_with_no_concerns(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows, 0))
+        assert result["eap_annual"] == 0.0
+
+    async def test_eap_zero_with_one_concern(self, farm_row, field_rows):
+        """EAP needs the minimum number of concerns (2) meeting threshold."""
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows, 1))
+        assert result["eap_annual"] == 0.0
+        assert result["resource_concerns_addressed"] == 1
+
+    async def test_assessment_read_error_falls_back_to_inline_scoring(
+        self, farm_row, field_rows, caplog
+    ):
+        """An APIError reading the assessment is logged and scoring runs inline."""
+        supabase = _supabase(farm_row, field_rows, concerns_meeting=5)
+        real_table = supabase.table.side_effect
+
+        def _table(name):
+            chain = real_table(name)
+            if name == "csp_eligibility_assessments":
+                chain.execute.side_effect = APIError({"message": "boom", "code": "XX000"})
+            return chain
+
+        supabase.table.side_effect = _table
+        with caplog.at_level("WARNING"):
+            result = await estimate_csp_payments(FARM_ID, supabase)
+
+        assert FARM_ID in caplog.text
+        # Inline scoring of the fixture practices, not the (unreadable) 5.
+        assert result["resource_concerns_addressed"] != 5
+
+    async def test_annual_is_eap_plus_activities(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        assert result["total_annual_payment"] == pytest.approx(
+            result["eap_annual"] + result["activity_payment_annual"], abs=0.01
+        )
+
+    async def test_activities_use_practice_standard_codes(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        codes = [a["code"] for a in result["activities_included"]]
+        assert codes == _DEFAULT_ACTIVITY_CODES
+        assert all(not c.startswith("E") for c in codes)
+        assert all(a["rate_is_estimate"] for a in result["activities_included"])
+
+    async def test_default_contract_is_fy2026_individual(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        assert result["contract_fiscal_year"] == 2026
+        assert result["joint_operation"] is False
+        assert result["contract_limit"]["amount"] == 300_000.0
+        assert result["annual_payment_limit"] is None
+
+    async def test_rules_metadata_included(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        rules = result["rules"]
+        assert rules["as_of"] == "2025-12-17"
+        assert rules["source_url"] == NB_440_26_2_URL
+        assert rules["contract_limit"]["rule_key"] == result["contract_limit"]["rule_key"]
+
+    async def test_five_year_is_annual_times_5_when_uncapped(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        assert result["payment_capped"] is False
+        assert result["total_5year_payment"] == pytest.approx(
+            result["total_annual_payment"] * _CONTRACT_YEARS, abs=0.01
+        )
+
+    async def test_large_farm_no_annual_cap_but_contract_limit(self, farm_row, field_rows):
+        """10,000 acres → annual well above the old $50k cap; 5-year capped at $300k."""
+        big = dict(farm_row, total_acres=10_000.0)
+        result = await estimate_csp_payments(FARM_ID, _supabase(big, field_rows, 5))
+        assert result["total_annual_payment"] > 50_000.0
+        assert result["total_5year_payment"] == 300_000.0
+        assert result["payment_capped"] is True
+
+    async def test_joint_operation_limit(self, farm_row, field_rows):
+        big = dict(farm_row, total_acres=10_000.0)
+        result = await estimate_csp_payments(
+            FARM_ID, _supabase(big, field_rows, 5), joint_operation=True
+        )
+        assert result["contract_limit"]["amount"] == 600_000.0
+        assert result["total_5year_payment"] <= 600_000.0
+        assert result["total_5year_payment"] > 300_000.0
+
+    async def test_pre_fy2026_contract_limit(self, farm_row, field_rows):
+        big = dict(farm_row, total_acres=10_000.0)
+        result = await estimate_csp_payments(
+            FARM_ID, _supabase(big, field_rows, 5), contract_fiscal_year=2025
+        )
+        assert result["contract_limit"]["amount"] == 200_000.0
+        assert result["contract_limit"]["rules_period"] == "pre-FY2026"
+        assert result["total_5year_payment"] == 200_000.0
+
+    async def test_field_breakdown_count_and_proportion(self, farm_row, field_rows):
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
         assert len(result["field_breakdown"]) == len(field_rows)
-
-    async def test_field_breakdown_proportional_to_acres(self, farm_row, field_rows):
-        """North 40 (120ac) vs South 60 (80ac): payment ratio should match acres."""
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
         breakdown = {fb["field_id"]: fb for fb in result["field_breakdown"]}
-        north = breakdown[FIELD_ID_A]
-        south = breakdown[FIELD_ID_B]
-        # Proportionality: north_total / south_total ≈ 120 / 80 = 1.5
+        north, south = breakdown[FIELD_ID_A], breakdown[FIELD_ID_B]
+        assert "activity_payment_annual" in north
         if south["total_annual"] > 0:
-            ratio = north["total_annual"] / south["total_annual"]
-            assert ratio == pytest.approx(1.5, abs=0.05)
+            assert north["total_annual"] / south["total_annual"] == pytest.approx(1.5, abs=0.05)
 
     async def test_field_breakdown_sums_to_total(self, farm_row, field_rows):
-        supabase = self._base_supabase(farm_row, field_rows)
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        total_from_fields = sum(fb["total_annual"] for fb in result["field_breakdown"])
-        assert total_from_fields == pytest.approx(result["total_annual_payment"], abs=0.10)
+        result = await estimate_csp_payments(FARM_ID, _supabase(farm_row, field_rows))
+        total = sum(fb["total_annual"] for fb in result["field_breakdown"])
+        assert total == pytest.approx(result["total_annual_payment"], abs=0.10)
 
     async def test_farm_not_found_raises_value_error(self):
         supabase = make_supabase_mock({"farms": {"data": None}})
         with pytest.raises(ValueError, match=FARM_ID):
             await estimate_csp_payments(FARM_ID, supabase)
 
-    async def test_payment_cap_applied_for_large_farm(self, farm_row, field_rows):
-        """A very large farm (10k acres) should hit the annual cap."""
-        big_farm = dict(farm_row)
-        big_farm["total_acres"] = 10_000.0
-        supabase = make_supabase_mock(
-            {
-                "farms": {"data": big_farm},
-                "fields": {"data": field_rows},
-                "csp_eligibility_assessments": {"data": {"concerns_meeting_threshold": 5, "cart_score": 60.0}},
-                "csp_enhancement_activities": {"data": []},
-            }
-        )
-        result = await estimate_csp_payments(FARM_ID, supabase)
-        assert result["total_annual_payment"] <= _MAX_ANNUAL_PAYMENT
-        assert result["payment_capped"] is True
-
 
 # ---------------------------------------------------------------------------
 # Integration: get_recommended_enhancements
 # ---------------------------------------------------------------------------
 
+def _enh_supabase(farm, rows=None):
+    return make_supabase_mock(
+        {
+            "farms": {"data": farm},
+            "csp_eligibility_assessments": {"data": None},
+            "csp_enhancement_activities": {"data": rows or []},
+        }
+    )
+
+
 @pytest.mark.asyncio
 class TestGetRecommendedEnhancements:
 
-    async def test_returns_list(self, farm_row):
-        supabase = make_supabase_mock(
-            {
-                "farms": {"data": farm_row},
-                "csp_eligibility_assessments": {"data": None},
-                "csp_enhancement_activities": {"data": []},
-            }
-        )
-        result = await get_recommended_enhancements(FARM_ID, supabase)
-        assert isinstance(result, list)
+    async def test_returns_full_catalog(self, farm_row):
+        result = await get_recommended_enhancements(FARM_ID, _enh_supabase(farm_row))
+        assert {r["code"] for r in result} == set(_CSP_ACTIVITIES)
 
     async def test_each_item_has_required_fields(self, farm_row):
-        supabase = make_supabase_mock(
-            {
-                "farms": {"data": farm_row},
-                "csp_eligibility_assessments": {"data": None},
-                "csp_enhancement_activities": {"data": []},
-            }
-        )
-        result = await get_recommended_enhancements(FARM_ID, supabase)
+        from app.models.schemas import CSPEnhancementActivity
+
+        result = await get_recommended_enhancements(FARM_ID, _enh_supabase(farm_row))
         required = {
-            "code", "name", "category", "land_use", "description",
-            "estimated_cost_per_acre", "payment_rate_pct",
-            "estimated_annual_payment", "applicable_acres",
-            "resource_concerns_addressed", "priority_score", "is_bundle_eligible",
+            "code", "practice_standard_code", "name", "category", "land_use",
+            "description", "estimated_rate_per_acre", "rate_is_estimate",
+            "rate_basis", "estimated_annual_payment", "applicable_acres",
+            "resource_concerns_addressed", "priority_score", "higher_payment",
+            "higher_payment_category",
         }
         for item in result:
-            assert required.issubset(item.keys()), f"Missing keys in item: {item.get('code')}"
+            assert required.issubset(item.keys()), item.get("code")
+            assert "is_bundle_eligible" not in item
+            assert "payment_rate_pct" not in item
+            CSPEnhancementActivity(**item)
+
+    async def test_no_e_codes_even_if_db_has_legacy_rows(self, farm_row):
+        legacy = [{"code": "E340A", "name": "Old", "description": "old", "active": True}]
+        result = await get_recommended_enhancements(FARM_ID, _enh_supabase(farm_row, legacy))
+        assert all(not r["code"].startswith("E") for r in result)
+
+    async def test_db_description_used_for_current_code(self, farm_row):
+        rows = [{"code": "340", "name": "Cover Crop", "description": "From DB", "active": True}]
+        result = await get_recommended_enhancements(FARM_ID, _enh_supabase(farm_row, rows))
+        cover = next(r for r in result if r["code"] == "340")
+        assert cover["description"] == "From DB"
 
     async def test_sorted_by_priority_score_descending(self, farm_row):
-        supabase = make_supabase_mock(
-            {
-                "farms": {"data": farm_row},
-                "csp_eligibility_assessments": {"data": None},
-                "csp_enhancement_activities": {"data": []},
-            }
-        )
-        result = await get_recommended_enhancements(FARM_ID, supabase)
+        result = await get_recommended_enhancements(FARM_ID, _enh_supabase(farm_row))
         scores = [r["priority_score"] for r in result]
         assert scores == sorted(scores, reverse=True)
 
@@ -403,24 +485,12 @@ class TestGetRecommendedEnhancements:
             await get_recommended_enhancements(FARM_ID, supabase)
 
     async def test_estimated_annual_payment_scales_with_farm_acres(self):
-        """Larger farm should produce higher estimated annual payments per enhancement."""
-        small_farm = {"id": FARM_ID, "state": "IA", "total_acres": 50.0}
-        large_farm = {"id": FARM_ID, "state": "IA", "total_acres": 500.0}
-
-        small_sb = make_supabase_mock(
-            {"farms": {"data": small_farm}, "csp_eligibility_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
+        small = await get_recommended_enhancements(
+            FARM_ID, _enh_supabase({"id": FARM_ID, "state": "IA", "total_acres": 50.0})
         )
-        large_sb = make_supabase_mock(
-            {"farms": {"data": large_farm}, "csp_eligibility_assessments": {"data": None}, "csp_enhancement_activities": {"data": []}}
+        large = await get_recommended_enhancements(
+            FARM_ID, _enh_supabase({"id": FARM_ID, "state": "IA", "total_acres": 500.0})
         )
-
-        small_result = await get_recommended_enhancements(FARM_ID, small_sb)
-        large_result = await get_recommended_enhancements(FARM_ID, large_sb)
-
-        # Find the same code in both results
-        small_map = {r["code"]: r for r in small_result}
-        large_map = {r["code"]: r for r in large_result}
-        common = set(small_map) & set(large_map)
-        assert len(common) > 0
-        code = next(iter(common))
-        assert large_map[code]["estimated_annual_payment"] > small_map[code]["estimated_annual_payment"]
+        s = {r["code"]: r for r in small}
+        la = {r["code"]: r for r in large}
+        assert la["340"]["estimated_annual_payment"] > s["340"]["estimated_annual_payment"]

@@ -15,21 +15,45 @@ Coverage targets:
   - De-duplication: same (field, practice) counted once
   - _credits_per_acre unit tests for each band and SOM tier
   - Persistence: credit_eligibility upsert called with program="VCM"
-  - Upsert failure is non-fatal
-  - Result contains estimated_total_credits and field_breakdown keys
+  - Upsert failure raises CreditDataError
+  - Read failures raise CreditDataError and nothing is saved
+  - Result contains estimated_total_credits, field_breakdown and estimate provenance
 """
 
-import pytest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
-from tests.conftest import _make_chain, FARM_ID, FIELD_ID_A, FIELD_ID_B
 
-from app.services.vcm import (
-    _credits_per_acre,
-    _PROTOCOL_PRACTICES,
-    _SOM_HIGH_THRESHOLD,
-    _SOM_LOW_THRESHOLD,
-    estimate_vcm_credits,
+import pytest
+from postgrest.exceptions import APIError
+
+from app.services import credit_rules
+from app.services.credit_rules import (
+    VCM_CREDIT_BANDS,
+    VCM_METHOD_LABEL,
+    VCM_SOM_TIERS,
+    CreditDataError,
 )
+from app.services.vcm import _credits_per_acre, estimate_vcm_credits
+from tests.conftest import FARM_ID, FIELD_ID_A, FIELD_ID_B, _make_chain
+
+_SOM_HIGH_THRESHOLD = VCM_SOM_TIERS.high_pct
+_SOM_LOW_THRESHOLD = VCM_SOM_TIERS.low_pct
+
+
+class TestVcmRuleProvenance:
+    def test_every_band_is_dated_unsourced_estimate(self):
+        """§4: these values have no primary source, so they must say so."""
+        for band in VCM_CREDIT_BANDS.values():
+            assert band.status == "estimate"
+            assert band.source_url is None
+            assert band.as_of
+        assert VCM_SOM_TIERS.status == "estimate"
+        assert VCM_SOM_TIERS.source_url is None
+
+    def test_method_label_is_not_a_protocol_name(self):
+        assert "Soil Carbon Protocol" not in VCM_METHOD_LABEL
+        assert "estimate" in VCM_METHOD_LABEL.lower()
+        assert credit_rules.vcm_rules_metadata()["is_estimate"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -108,14 +132,22 @@ def _make_vcm_supabase(
     acted_recs: list[dict],
     soil_profiles: list[dict] | None = None,
     upsert_data: list[dict] | None = None,
+    failing_table: str | None = None,
 ) -> MagicMock:
-    """Build a mock Supabase for VCM evaluation."""
+    """Build a mock Supabase for VCM evaluation.
+
+    ``failing_table`` makes reads from that table raise, as a DB outage would.
+    """
     mock = MagicMock()
 
     if upsert_data is None:
         upsert_data = [{"id": "elig-vcm-1", "farm_id": FARM_ID, "program": "VCM"}]
 
     def _table(name: str):
+        if name == failing_table:
+            chain = _make_chain(data=None)
+            chain.execute.side_effect = APIError({"message": f"{name} read failed"})
+            return chain
         if name == "fields":
             return _make_chain(data=fields)
         if name == "recommendations":
@@ -164,7 +196,9 @@ class TestEstimateVcmCredits:
     async def test_conservation_rotation_generates_positive_credits(self):
         """A farm with conservation rotation (328) acted → credits > 0."""
         fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 60.0}]
-        acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "328", "title": "Conservation Rotation"}]
+        acted_recs = [
+            {"field_id": FIELD_ID_A, "practice_code": "328", "title": "Conservation Rotation"}
+        ]
 
         supabase = _make_vcm_supabase(fields, acted_recs)
         result = await estimate_vcm_credits(FARM_ID, supabase)
@@ -235,8 +269,12 @@ class TestEstimateVcmCredits:
         fields = [{"id": FIELD_ID_A, "name": "Field", "acres": 100.0}]
         acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
 
-        low_som_profiles = [{"field_id": FIELD_ID_A, "organic_matter_pct": 1.0, "fetched_at": "2026-01-01"}]
-        high_som_profiles = [{"field_id": FIELD_ID_A, "organic_matter_pct": 4.0, "fetched_at": "2026-01-01"}]
+        low_som_profiles = [
+            {"field_id": FIELD_ID_A, "organic_matter_pct": 1.0, "fetched_at": "2026-01-01"}
+        ]
+        high_som_profiles = [
+            {"field_id": FIELD_ID_A, "organic_matter_pct": 4.0, "fetched_at": "2026-01-01"}
+        ]
 
         supabase_low = _make_vcm_supabase(fields, acted_recs, soil_profiles=low_som_profiles)
         supabase_high = _make_vcm_supabase(fields, acted_recs, soil_profiles=high_som_profiles)
@@ -291,15 +329,20 @@ class TestEstimateVcmCredits:
         # Should be 0.5 × 100 = 50.0, not doubled
         assert result["estimated_total_credits"] == pytest.approx(50.0, abs=0.01)
 
-    async def test_result_contains_program_name(self):
-        """The result must include program_name='Soil Carbon Protocol'."""
+    async def test_result_is_labelled_as_estimate(self):
+        """The result names the RegenAI estimate method and carries rule provenance."""
         fields = [{"id": FIELD_ID_A, "name": "Field", "acres": 100.0}]
         acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
 
         supabase = _make_vcm_supabase(fields, acted_recs)
         result = await estimate_vcm_credits(FARM_ID, supabase)
 
-        assert result.get("program_name") == "Soil Carbon Protocol"
+        assert result["program_name"] == VCM_METHOD_LABEL
+        assert result["method_label"] == VCM_METHOD_LABEL
+        assert result["is_estimate"] is True
+        assert result["rules_as_of"] == credit_rules.VCM_RULES_AS_OF
+        assert result["rules_source_url"] is None
+        assert "Soil Carbon Protocol" not in result["notes"]
 
     async def test_result_contains_required_top_level_keys(self):
         """Result dict must contain all expected keys for the router to use."""
@@ -345,7 +388,9 @@ class TestEstimateVcmCredits:
         breakdown = result["field_breakdown"]
         assert len(breakdown) == 1
         entry = breakdown[0]
-        required_field_keys = {"field_id", "field_name", "acres", "practices", "field_total_credits"}
+        required_field_keys = {
+            "field_id", "field_name", "acres", "practices", "field_total_credits"
+        }
         assert required_field_keys.issubset(entry.keys())
 
         practice_entry = entry["practices"][0]
@@ -397,8 +442,8 @@ class TestVcmPersistence:
         assert captured[0]["program"] == "VCM"
         assert captured[0]["farm_id"] == FARM_ID
 
-    async def test_upsert_failure_is_non_fatal(self):
-        """A upsert failure must not raise; the result is still returned."""
+    async def test_upsert_failure_raises(self):
+        """A failed upsert must raise instead of returning an unsaved estimate."""
         fields = [{"id": FIELD_ID_A, "name": "Field", "acres": 100.0}]
         acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
 
@@ -414,15 +459,53 @@ class TestVcmPersistence:
             if name == "credit_eligibility":
                 tbl = MagicMock()
                 upsert_chain = MagicMock()
-                upsert_chain.execute.side_effect = Exception("write failure")
+                upsert_chain.execute.side_effect = APIError({"message": "write failure"})
                 tbl.upsert.return_value = upsert_chain
                 return tbl
             return _make_chain(data=None)
 
         mock.table.side_effect = _table
 
-        result = await estimate_vcm_credits(FARM_ID, mock)
+        with pytest.raises(CreditDataError, match="could not be saved"):
+            await estimate_vcm_credits(FARM_ID, mock)
 
-        # Result still includes required keys despite write failure
-        assert "estimated_total_credits" in result
-        assert result["farm_id"] == FARM_ID
+    async def test_upsert_returning_no_row_raises(self):
+        fields = [{"id": FIELD_ID_A, "name": "Field", "acres": 100.0}]
+        supabase = _make_vcm_supabase(fields, acted_recs=[], upsert_data=[])
+
+        with pytest.raises(CreditDataError):
+            await estimate_vcm_credits(FARM_ID, supabase)
+
+    async def test_updated_at_uses_injected_clock(self):
+        pinned = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+        supabase = _make_vcm_supabase(fields=[], acted_recs=[], upsert_data=[{"id": "v1"}])
+
+        result = await estimate_vcm_credits(FARM_ID, supabase, now=pinned)
+
+        assert result["updated_at"] == pinned.isoformat()
+
+
+@pytest.mark.asyncio
+class TestVcmReadFailures:
+    @pytest.mark.parametrize("failing_table", ["fields", "recommendations", "soil_profiles"])
+    async def test_read_failure_raises_and_saves_nothing(self, failing_table):
+        """A failed read used to be saved as not_eligible or a low-bound estimate."""
+        fields = [{"id": FIELD_ID_A, "name": "Field", "acres": 100.0}]
+        acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
+        supabase = _make_vcm_supabase(fields, acted_recs, failing_table=failing_table)
+
+        with pytest.raises(CreditDataError, match="could not read"):
+            await estimate_vcm_credits(FARM_ID, supabase)
+
+        table_calls = [c.args[0] for c in supabase.table.call_args_list]
+        assert "credit_eligibility" not in table_calls
+
+    async def test_non_database_error_is_not_reported_as_missing_data(self):
+        """A code bug must surface as itself, not as 'could not read fields'."""
+        chain = _make_chain(data=None)
+        chain.execute.side_effect = TypeError("bug in query building")
+        supabase = MagicMock()
+        supabase.table.return_value = chain
+
+        with pytest.raises(TypeError):
+            await estimate_vcm_credits(FARM_ID, supabase)

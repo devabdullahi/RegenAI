@@ -10,15 +10,34 @@ Coverage targets:
   - get_admin_client creates client using the service role key
 """
 
+import logging
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-
+from supabase_auth.errors import AuthApiError
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_cached_clients():
+    """get_supabase_client/get_admin_client are lru_cached singletons.
+
+    Clear the caches around every test so a client created (or mocked) by one
+    test is never returned to another, which would make the create_client
+    patches below ineffective and the tests order-dependent.
+    """
+    from app.auth.middleware import get_admin_client, get_supabase_client
+
+    get_admin_client.cache_clear()
+    get_supabase_client.cache_clear()
+    yield
+    get_admin_client.cache_clear()
+    get_supabase_client.cache_clear()
+
 
 def _make_credentials(token: str = "valid-jwt-token") -> HTTPAuthorizationCredentials:
     """Build an HTTPAuthorizationCredentials object with the given token."""
@@ -167,6 +186,39 @@ class TestGetCurrentUser:
 
         assert exc_info.value.detail == "Invalid or expired token"
 
+    @pytest.mark.asyncio
+    async def test_rejected_token_logs_warning_without_traceback(self, caplog):
+        """A token Supabase rejects is a client error: WARNING level, no traceback."""
+        from app.auth.middleware import get_current_user
+
+        mock_supabase = MagicMock()
+        mock_supabase.auth.get_user.side_effect = AuthApiError("invalid JWT", 401, "bad_jwt")
+
+        with patch("app.auth.middleware.get_supabase_client", return_value=mock_supabase):
+            with caplog.at_level(logging.DEBUG, logger="app.auth.middleware"):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_current_user(MagicMock(), _make_credentials("bad-token"))
+
+        assert exc_info.value.status_code == 401
+        assert [record.levelno for record in caplog.records] == [logging.WARNING]
+        assert caplog.records[0].exc_info is None
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_still_logged_with_traceback(self, caplog):
+        """Non-auth exceptions remain ERROR-level with a traceback for debugging."""
+        from app.auth.middleware import get_current_user
+
+        mock_supabase = MagicMock()
+        mock_supabase.auth.get_user.side_effect = RuntimeError("client bug")
+
+        with patch("app.auth.middleware.get_supabase_client", return_value=mock_supabase):
+            with caplog.at_level(logging.DEBUG, logger="app.auth.middleware"):
+                with pytest.raises(HTTPException):
+                    await get_current_user(MagicMock(), _make_credentials("token"))
+
+        assert [record.levelno for record in caplog.records] == [logging.ERROR]
+        assert caplog.records[0].exc_info is not None
+
 
 # ---------------------------------------------------------------------------
 # get_authenticated_client
@@ -184,13 +236,16 @@ class TestGetAuthenticatedClient:
         credentials = _make_credentials("user-jwt")
 
         with patch("app.auth.middleware.create_client", return_value=mock_supabase):
-            result = await get_authenticated_client(credentials)
+            result = await get_authenticated_client(user=_make_user(), credentials=credentials)
 
         assert result is mock_supabase
 
     @pytest.mark.asyncio
-    async def test_sets_session_with_token(self):
-        """The user's JWT must be passed to supabase.auth.set_session."""
+    async def test_scopes_postgrest_to_user_token(self):
+        """The user's JWT must be applied to the PostgREST sub-client so RLS is enforced.
+
+        set_session() with an empty refresh token is intentionally no longer used.
+        """
         from app.auth.middleware import get_authenticated_client
 
         mock_supabase = MagicMock()
@@ -198,9 +253,31 @@ class TestGetAuthenticatedClient:
         credentials = _make_credentials(token)
 
         with patch("app.auth.middleware.create_client", return_value=mock_supabase):
-            await get_authenticated_client(credentials)
+            await get_authenticated_client(user=_make_user(), credentials=credentials)
 
-        mock_supabase.auth.set_session.assert_called_once_with(token, "")
+        mock_supabase.postgrest.auth.assert_called_once_with(token)
+        mock_supabase.auth.set_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_creates_fresh_client_per_request(self):
+        """Each request must get its own client to prevent cross-request token leakage."""
+        from app.auth.middleware import get_authenticated_client
+
+        with patch(
+            "app.auth.middleware.create_client",
+            side_effect=lambda url, key: MagicMock(),
+        ) as create_mock:
+            first = await get_authenticated_client(
+                user=_make_user("user-a"), credentials=_make_credentials("token-a")
+            )
+            second = await get_authenticated_client(
+                user=_make_user("user-b"), credentials=_make_credentials("token-b")
+            )
+
+        assert create_mock.call_count == 2
+        assert first is not second
+        first.postgrest.auth.assert_called_once_with("token-a")
+        second.postgrest.auth.assert_called_once_with("token-b")
 
     @pytest.mark.asyncio
     async def test_uses_anon_key_not_service_role(self):
@@ -216,7 +293,7 @@ class TestGetAuthenticatedClient:
             return MagicMock()
 
         with patch("app.auth.middleware.create_client", side_effect=capture_create_client):
-            await get_authenticated_client(credentials)
+            await get_authenticated_client(user=_make_user(), credentials=credentials)
 
         assert len(captured_calls) == 1
         assert captured_calls[0]["key"] == settings.supabase_anon_key

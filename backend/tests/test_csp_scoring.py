@@ -4,26 +4,49 @@ Tests for app.services.csp_scoring — CART stewardship scoring engine.
 Coverage targets:
   - Stewardship point calculation with various practice combinations
   - SOM bonus multiplier logic (_get_som_tier + application)
-  - State ranking threshold lookup and comparison
+  - State ranking threshold lookup and comparison (including states with no
+    sourced threshold, which must report unknown rather than a default)
   - Gap analysis in the returned payload
   - Empty-practice case (should return 0 total score)
   - Concern clamping to per-category max
   - Farm-not-found raises ValueError
 """
 
+import re
+from pathlib import Path
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock
+from postgrest.exceptions import APIError
 from tests.conftest import make_supabase_mock, FARM_ID, FIELD_ID_A
 
+from app.models.schemas import CSPScoreBreakdown
 from app.services.csp_scoring import (
     _get_som_tier,
     _get_ranking_threshold,
     _collect_practices,
-    _MAX_POINTS_PER_CONCERN,
     _MAX_TOTAL_POINTS,
-    _STATE_RANKING_THRESHOLDS,
     calculate_stewardship_score,
 )
+from app.services.program_rules import (
+    CSP_CART_MAX_POINTS_PER_CONCERN as _MAX_POINTS_PER_CONCERN,
+    CSP_GAP_CLOSURE_ACTIVITIES,
+    CSP_PRACTICE_CATALOG,
+    CSP_SCORING_ESTIMATED_RULES,
+    CSP_STATE_RANKING_THRESHOLDS,
+)
+
+
+def _score_supabase(practices: list[str], state: str = "IL"):
+    return make_supabase_mock(
+        {
+            "farms": {"data": {"id": FARM_ID, "state": state, "total_acres": 100.0}},
+            "fields": {"data": [{"id": FIELD_ID_A, "name": "F", "acres": 100.0,
+                                 "crop_type": "corn", "practices": practices}]},
+            "soil_profiles": {"data": []},
+            "recommendations": {"data": []},
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +90,87 @@ class TestGetRankingThreshold:
         assert _get_ranking_threshold("ia") == _get_ranking_threshold("IA")
         assert _get_ranking_threshold("mn") == _get_ranking_threshold("MN")
 
-    def test_unknown_state_returns_default(self):
-        assert _get_ranking_threshold("TX") == _STATE_RANKING_THRESHOLDS["_default"]
-        assert _get_ranking_threshold("CA") == _STATE_RANKING_THRESHOLDS["_default"]
+    def test_unknown_state_returns_none(self):
+        """No sourced threshold means None, never an invented default."""
+        assert _get_ranking_threshold("TX") is None
+        assert _get_ranking_threshold("CA") is None
+        assert _get_ranking_threshold("") is None
+
+
+class TestPracticeCatalog:
+    def test_every_concern_id_is_scored(self):
+        for code, practice in CSP_PRACTICE_CATALOG.items():
+            assert practice.resource_concerns, code
+            for concern in practice.resource_concerns:
+                assert concern in _MAX_POINTS_PER_CONCERN, (code, concern)
+            assert practice.base_points > 0, code
+            assert practice.as_of, code
+
+    def test_gap_closure_codes_are_csp_activities_for_their_concern(self):
+        for concern, codes in CSP_GAP_CLOSURE_ACTIVITIES.items():
+            assert concern in _MAX_POINTS_PER_CONCERN
+            for code in codes:
+                practice = CSP_PRACTICE_CATALOG[code]
+                assert practice.is_csp_activity, code
+                assert concern in practice.resource_concerns, (concern, code)
+
+    def test_irrigation_practices_use_nrcs_standard_codes(self):
+        """NRCS standards: 430 Irrigation Pipeline, 441 Microirrigation, 449 IWM.
+
+        484 is Mulching, 657 Wetland Restoration and 666 Forest Stand
+        Improvement, so none of them may carry an irrigation label.
+        """
+        assert CSP_PRACTICE_CATALOG["430"].name == "Irrigation Pipeline"
+        assert CSP_PRACTICE_CATALOG["441"].name == "Irrigation System, Microirrigation"
+        assert CSP_PRACTICE_CATALOG["449"].name == "Irrigation Water Management"
+        assert CSP_PRACTICE_CATALOG["430"].resource_concerns == ("water_quantity",)
+        assert CSP_PRACTICE_CATALOG["441"].resource_concerns == ("water_quantity", "energy")
+        for wrong_code in ("484", "657", "666"):
+            assert wrong_code not in CSP_PRACTICE_CATALOG
+
+    def test_catalog_code_matches_its_practice_standard_code(self):
+        for code, practice in CSP_PRACTICE_CATALOG.items():
+            assert code.split("-")[0] == practice.practice_standard_code, code
+
+    def test_unsourced_rules_are_labelled(self):
+        assert CSP_SCORING_ESTIMATED_RULES
+        for rule in CSP_SCORING_ESTIMATED_RULES:
+            assert rule.status in ("estimate", "unverified"), rule.key
+            assert rule.source_url is None, rule.key
+            assert rule.as_of, rule.key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("concern_id", "code"),
+    [(concern, code) for concern, codes in CSP_GAP_CLOSURE_ACTIVITIES.items() for code in codes],
+)
+async def test_gap_closure_code_scores_for_its_concern(concern_id, code):
+    """Adopting a recommended activity must earn points for the concern it closes."""
+    result = await calculate_stewardship_score(FARM_ID, _score_supabase([code]))
+    concern = next(c for c in result["resource_concern_scores"] if c["concern_id"] == concern_id)
+    assert code in concern["practices_addressing"]
+    assert concern["points_earned"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_mulching_and_forest_codes_do_not_score_as_irrigation():
+    """Fields recording 484 (Mulching) or 666 (Forest Stand Improvement) used to
+    earn water quantity points as irrigation practices."""
+    wrong = await calculate_stewardship_score(FARM_ID, _score_supabase(["484", "666"]))
+    pipeline = await calculate_stewardship_score(FARM_ID, _score_supabase(["430"]))
+
+    assert wrong["component_scores"]["water_quantity"] == 0.0
+    assert pipeline["component_scores"]["water_quantity"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_microirrigation_scores_water_quantity_and_energy():
+    """441 is an efficient irrigation practice; it once scored only energy."""
+    result = await calculate_stewardship_score(FARM_ID, _score_supabase(["441"]))
+
+    assert result["component_scores"]["water_quantity"] > 0.0
+    assert result["component_scores"]["energy"] > 0.0
 
 
 class TestCollectPractices:
@@ -339,12 +440,44 @@ class TestCalculateStewardshipScore:
         with pytest.raises(ValueError, match=FARM_ID):
             await calculate_stewardship_score(FARM_ID, supabase)
 
-    async def test_farm_fetch_exception_raises_value_error(self):
-        """If the DB call itself blows up, we should get ValueError."""
+    async def test_farm_fetch_api_error_raises_value_error(self):
+        """PostgREST errors on the farm lookup (e.g. zero rows) map to ValueError."""
         supabase = MagicMock()
-        supabase.table.side_effect = Exception("connection timeout")
+        supabase.table.return_value.select.return_value.eq.return_value.single.return_value \
+            .execute.side_effect = APIError({"message": "no rows", "code": "PGRST116"})
         with pytest.raises(ValueError):
             await calculate_stewardship_score(FARM_ID, supabase)
+
+    async def test_unexpected_farm_fetch_error_propagates(self):
+        """Non-database errors are not disguised as 'farm not found'."""
+        supabase = MagicMock()
+        supabase.table.side_effect = RuntimeError("connection timeout")
+        with pytest.raises(RuntimeError):
+            await calculate_stewardship_score(FARM_ID, supabase)
+
+    async def test_fields_query_error_propagates(self):
+        """A failed fields query must not silently score the farm as zero."""
+        supabase = make_supabase_mock(
+            {"farms": {"data": {"id": FARM_ID, "state": "IA", "total_acres": 1.0}}}
+        )
+        real_table = supabase.table.side_effect
+
+        def _table(name):
+            chain = real_table(name)
+            if name == "fields":
+                chain.execute.side_effect = APIError({"message": "boom", "code": "XX000"})
+            return chain
+
+        supabase.table.side_effect = _table
+        with pytest.raises(APIError):
+            await calculate_stewardship_score(FARM_ID, supabase)
+
+    async def test_response_is_labelled_estimate_and_validates(self):
+        result = await calculate_stewardship_score(FARM_ID, _score_supabase(["340"]))
+        assert result["is_estimate"] is True
+        assert result["scoring_rules"]["source_url"] is None
+        assert result["scoring_rules"]["min_priority_concerns"]["value"] == 2
+        CSPScoreBreakdown(**result)
 
     async def test_avg_som_computed_from_multiple_fields(self):
         """avg_som_pct must be the mean of per-field SOM readings."""
@@ -382,7 +515,24 @@ class TestCalculateStewardshipScore:
         # 590 → 4 pts, threshold = 10 pts → should NOT meet threshold
         assert water_q["meets_threshold"] is False
 
-    async def test_unknown_state_uses_default_threshold(self):
+    async def test_unknown_state_reports_no_threshold(self):
+        """A state without a sourced threshold must report unknown, not a guess."""
+        supabase = make_supabase_mock(
+            {
+                "farms": {"data": {"id": FARM_ID, "state": "TX", "total_acres": 100.0}},
+                "fields": {"data": [{"id": FIELD_ID_A, "name": "F", "acres": 100.0,
+                                     "crop_type": "corn",
+                                     "practices": ["340", "329", "328", "590", "393"]}]},
+                "soil_profiles": {"data": []},
+                "recommendations": {"data": []},
+            }
+        )
+        result = await calculate_stewardship_score(FARM_ID, supabase)
+        assert result["state_ranking_threshold"] is None
+        assert result["meets_ranking_threshold"] is None
+        assert result["gap_to_threshold"] is None
+
+    async def test_unknown_state_scoring_rules_say_not_published(self):
         supabase = make_supabase_mock(
             {
                 "farms": {"data": {"id": FARM_ID, "state": "TX", "total_acres": 100.0}},
@@ -392,4 +542,74 @@ class TestCalculateStewardshipScore:
             }
         )
         result = await calculate_stewardship_score(FARM_ID, supabase)
-        assert result["state_ranking_threshold"] == _STATE_RANKING_THRESHOLDS["_default"]
+        citation = result["scoring_rules"]["state_ranking_threshold"]
+        assert citation["status"] == "not_published"
+        assert citation["value"] is None
+        assert citation["state"] == "TX"
+
+    async def test_known_state_scoring_rules_say_known_estimate(self):
+        supabase = make_supabase_mock(
+            {
+                "farms": {"data": {"id": FARM_ID, "state": "IA", "total_acres": 100.0}},
+                "fields": {"data": []},
+                "soil_profiles": {"data": []},
+                "recommendations": {"data": []},
+            }
+        )
+        result = await calculate_stewardship_score(FARM_ID, supabase)
+        citation = result["scoring_rules"]["state_ranking_threshold"]
+        assert citation["status"] == "known_estimate"
+        assert citation["value"] == 47.0
+
+    async def test_missing_state_reports_no_threshold(self):
+        """A farm row with no state must not fall back to a number either."""
+        supabase = make_supabase_mock(
+            {
+                "farms": {"data": {"id": FARM_ID, "state": None, "total_acres": 100.0}},
+                "fields": {"data": []},
+                "soil_profiles": {"data": []},
+                "recommendations": {"data": []},
+            }
+        )
+        result = await calculate_stewardship_score(FARM_ID, supabase)
+        assert result["state_ranking_threshold"] is None
+        assert result["scoring_rules"]["state_ranking_threshold"]["state"] is None
+
+
+
+class TestNoInventedDefaultThreshold:
+    """Drift guard: nothing may reintroduce a fabricated ranking threshold.
+
+    RegenAI once shipped CSP_DEFAULT_STATE_RANKING_THRESHOLD = 42.0, which was
+    presented to every state we had no data for. Unknown must stay unknown.
+    """
+
+    #: Names that would signal a fallback ranking threshold has come back.
+    _DEFAULT_THRESHOLD_NAME = re.compile(
+        r"[A-Z_]*(DEFAULT|FALLBACK)[A-Z_]*RANKING_THRESHOLD[A-Z_]*"
+        r"|[A-Z_]*RANKING_THRESHOLD[A-Z_]*(DEFAULT|FALLBACK)[A-Z_]*"
+    )
+
+    def test_program_rules_exposes_no_default_threshold(self):
+        import app.services.program_rules as program_rules
+
+        offenders = [
+            name
+            for name in dir(program_rules)
+            if self._DEFAULT_THRESHOLD_NAME.search(name)
+        ]
+        assert offenders == []
+
+    def test_no_app_module_defines_a_default_threshold(self):
+        app_dir = Path(__file__).resolve().parents[1] / "app"
+        offenders = [
+            str(path.relative_to(app_dir))
+            for path in app_dir.rglob("*.py")
+            if self._DEFAULT_THRESHOLD_NAME.search(path.read_text(encoding="utf-8"))
+        ]
+        assert offenders == []
+
+    def test_states_without_data_resolve_to_none(self):
+        for state in ("TX", "CA", "NY", "FL", "WA", "GA", "PA"):
+            assert state not in CSP_STATE_RANKING_THRESHOLDS
+            assert _get_ranking_threshold(state) is None

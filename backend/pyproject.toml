@@ -3,7 +3,6 @@ name = "regenai-backend"
 version = "0.1.0"
 description = "RegenAI — AI platform for regenerative agriculture"
 authors = ["RegenAI Team"]
-readme = "README.md"
 packages = [{include = "app"}]
 
 [tool.poetry.dependencies]
@@ -15,10 +14,11 @@ pydantic-settings = "^2.0"
 supabase = "^2.0"
 httpx = "^0.28"
 slowapi = "^0.1.9"
+python-multipart = "^0.0.20"
 python-dotenv = "^1.0"
-anthropic = "^0.49"
 weasyprint = "^63"
 resend = "^2.0"
+openai = "^3.13.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

@@ -12,15 +12,25 @@ Coverage targets:
   - Correct practice codes appear in practices_documented
   - De-duplication: same (field, code) acted twice counted once
   - Persistence: credit_eligibility upsert called
-  - Upsert failure is non-fatal (result still returned)
+  - Upsert failure (or no row returned) raises CreditDataError
+  - Read failures raise CreditDataError and nothing is saved
+  - Qualifying document types match the DocumentType enum
 """
 
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
-from tests.conftest import make_supabase_mock, _make_chain, FARM_ID, FIELD_ID_A, FIELD_ID_B
+from postgrest.exceptions import APIError
 
-from app.services.eqip import evaluate_eqip_eligibility
-
+from app.models.schemas import DocumentType
+from app.services.credit_rules import CreditDataError
+from app.services.eqip import (
+    QUALIFYING_DOC_TYPE_LABELS,
+    QUALIFYING_DOC_TYPES,
+    evaluate_eqip_eligibility,
+)
+from tests.conftest import FARM_ID, FIELD_ID_A, FIELD_ID_B, _make_chain
 
 # ---------------------------------------------------------------------------
 # EQIP reference data (mirrors seed data)
@@ -44,17 +54,23 @@ def _make_eqip_supabase(
     eqip_practices: list[dict],
     documents: list[dict] | None = None,
     upsert_data: list[dict] | None = None,
+    failing_table: str | None = None,
 ) -> MagicMock:
-    """Build a Supabase mock for EQIP evaluation with configurable responses."""
+    """Build a Supabase mock for EQIP evaluation with configurable responses.
+
+    ``failing_table`` makes reads from that table raise, as a DB outage would.
+    """
     mock = MagicMock()
-    call_count: dict[str, int] = {}
 
     # Default upsert result
     if upsert_data is None:
         upsert_data = [{"id": "elig-uuid-1", "farm_id": FARM_ID, "program": "EQIP"}]
 
     def _table(name: str):
-        call_count[name] = call_count.get(name, 0) + 1
+        if name == failing_table:
+            chain = _make_chain(data=None)
+            chain.execute.side_effect = APIError({"message": f"{name} read failed"})
+            return chain
 
         if name == "fields":
             return _make_chain(data=fields)
@@ -184,6 +200,19 @@ class TestEqipEligible:
         result = await evaluate_eqip_eligibility(FARM_ID, supabase)
 
         assert result["status"] == "pending_review"
+
+    async def test_other_only_documents_do_not_qualify(self):
+        """``other`` uploads used to satisfy the check the notes said they did not."""
+        fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 120.0}]
+        acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
+        documents = [{"doc_type": "other"}, {"doc_type": "other"}]
+
+        supabase = _make_eqip_supabase(fields, acted_recs, EQIP_PRACTICES, documents=documents)
+        result = await evaluate_eqip_eligibility(FARM_ID, supabase)
+
+        assert result["status"] == "pending_review"
+        for label in QUALIFYING_DOC_TYPE_LABELS.values():
+            assert label in result["notes"]
 
 
 # ---------------------------------------------------------------------------
@@ -357,8 +386,8 @@ class TestEqipPersistence:
         assert captured_upsert[0]["farm_id"] == FARM_ID
         assert captured_upsert[0]["program"] == "EQIP"
 
-    async def test_upsert_failure_is_non_fatal(self):
-        """A failure in the credit_eligibility upsert must not raise — result still returned."""
+    async def test_upsert_failure_raises(self):
+        """A failed credit_eligibility upsert must raise, not return an unsaved result."""
         fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 120.0}]
         acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
 
@@ -376,18 +405,76 @@ class TestEqipPersistence:
             if name == "credit_eligibility":
                 tbl = MagicMock()
                 upsert_chain = MagicMock()
-                upsert_chain.execute.side_effect = Exception("DB write failed")
+                upsert_chain.execute.side_effect = APIError({"message": "DB write failed"})
                 tbl.upsert.return_value = upsert_chain
                 return tbl
             return _make_chain(data=None)
 
         mock.table.side_effect = _table
 
-        result = await evaluate_eqip_eligibility(FARM_ID, mock)
+        with pytest.raises(CreditDataError, match="could not be saved"):
+            await evaluate_eqip_eligibility(FARM_ID, mock)
 
-        # Result should still be present despite upsert failure
-        assert result["farm_id"] == FARM_ID
-        assert result["status"] in ("eligible", "pending_review", "not_eligible")
+    async def test_upsert_returning_no_row_raises(self):
+        """An upsert that returns no row (e.g. blocked by RLS) was not saved → raise."""
+        fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 120.0}]
+        supabase = _make_eqip_supabase(fields, [], EQIP_PRACTICES, upsert_data=[])
+
+        with pytest.raises(CreditDataError):
+            await evaluate_eqip_eligibility(FARM_ID, supabase)
+
+    async def test_updated_at_uses_injected_clock(self):
+        """The saved timestamp comes from the injected `now`, so tests can pin dates."""
+        fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 120.0}]
+        pinned = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+        supabase = _make_eqip_supabase(fields, [], EQIP_PRACTICES, upsert_data=[{"id": "e1"}])
+
+        result = await evaluate_eqip_eligibility(FARM_ID, supabase, now=pinned)
+
+        assert result["updated_at"] == pinned.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Read failures must not be saved as a result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestEqipReadFailures:
+    @pytest.mark.parametrize(
+        "failing_table", ["fields", "recommendations", "eqip_practices", "documents"]
+    )
+    async def test_read_failure_raises_and_saves_nothing(self, failing_table):
+        """A failed read used to be treated as 'no data' and saved as not_eligible."""
+        fields = [{"id": FIELD_ID_A, "name": "North 40", "acres": 120.0}]
+        acted_recs = [{"field_id": FIELD_ID_A, "practice_code": "340", "title": "Cover Crop"}]
+        supabase = _make_eqip_supabase(
+            fields, acted_recs, EQIP_PRACTICES, failing_table=failing_table
+        )
+
+        with pytest.raises(CreditDataError, match="could not read"):
+            await evaluate_eqip_eligibility(FARM_ID, supabase)
+
+        table_calls = [c.args[0] for c in supabase.table.call_args_list]
+        assert "credit_eligibility" not in table_calls
+
+    async def test_non_database_error_is_not_reported_as_missing_data(self):
+        """A code bug must surface as itself, not as 'could not read fields'."""
+        chain = _make_chain(data=None)
+        chain.execute.side_effect = TypeError("bug in query building")
+        supabase = MagicMock()
+        supabase.table.return_value = chain
+
+        with pytest.raises(TypeError):
+            await evaluate_eqip_eligibility(FARM_ID, supabase)
+
+
+class TestQualifyingDocTypes:
+    def test_doc_types_are_real_document_types_except_other(self):
+        """Drift guard: qualifying types are uploadable types, and ``other`` is not one."""
+        assert QUALIFYING_DOC_TYPES == {t.value for t in DocumentType} - {"other"}
+
+    def test_note_lists_exactly_the_qualifying_types(self):
+        assert set(QUALIFYING_DOC_TYPE_LABELS) == QUALIFYING_DOC_TYPES
 
 
 # ---------------------------------------------------------------------------
