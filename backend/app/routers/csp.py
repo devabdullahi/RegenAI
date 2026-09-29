@@ -366,6 +366,55 @@ _PG_UNIQUE_VIOLATION = "23505"
 _PG_FOREIGN_KEY_VIOLATION = "23503"
 
 
+def _load_enhancement_farm_id(enhancement_id: str, supabase) -> str:
+    """Return the farm_id of an enhancement row the user can see, else 404."""
+    try:
+        result = (
+            supabase.table(_ENHANCEMENTS_TABLE)
+            .select("farm_id")
+            .eq("id", enhancement_id)
+            .limit(1)
+            .execute()
+        )
+    except APIError as exc:
+        logger.error(
+            "csp/farm-enhancements: lookup failed id=%s: %s", enhancement_id, exc
+        )
+        raise HTTPException(status_code=500, detail="Failed to load enhancement.") from exc
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Enhancement not found")
+    farm_id = result.data[0]["farm_id"]
+    assert_farm_access(farm_id, supabase)
+    return farm_id
+
+
+def _assert_field_on_farm(field_id: str, farm_id: str, supabase) -> None:
+    """422 unless field_id is a field of farm_id.
+
+    RLS on csp_farm_enhancements checks only farm ownership and the FK only
+    checks that the field exists, so neither stops a field from another farm.
+    """
+    try:
+        result = (
+            supabase.table("fields")
+            .select("id")
+            .eq("id", field_id)
+            .eq("farm_id", farm_id)
+            .limit(1)
+            .execute()
+        )
+    except APIError as exc:
+        logger.error(
+            "csp/farm-enhancements: field lookup failed field=%s farm=%s: %s",
+            field_id, farm_id, exc,
+        )
+        raise HTTPException(status_code=500, detail="Failed to verify field.") from exc
+
+    if not result.data:
+        raise HTTPException(status_code=422, detail="Field does not belong to this farm.")
+
+
 @router.get("/farm-enhancements", response_model=FarmEnhancementListResponse)
 async def list_farm_enhancements(
     farm_id: UUID,
@@ -399,6 +448,8 @@ async def create_farm_enhancement(
 ):
     """Save a new enhancement selection for a farm."""
     assert_farm_access(body.farm_id, supabase)
+    if body.field_id is not None:
+        _assert_field_on_farm(body.field_id, body.farm_id, supabase)
 
     payload = body.model_dump(mode="json", exclude_none=True)
 
@@ -434,6 +485,10 @@ async def update_farm_enhancement(
     if not updates:
         raise HTTPException(status_code=422, detail="No fields to update.")
 
+    farm_id = _load_enhancement_farm_id(enhancement_id_str, supabase)
+    if updates.get("field_id") is not None:
+        _assert_field_on_farm(updates["field_id"], farm_id, supabase)
+
     try:
         result = (
             supabase.table(_ENHANCEMENTS_TABLE)
@@ -462,6 +517,7 @@ async def delete_farm_enhancement(
 ):
     """Delete an enhancement selection."""
     enhancement_id_str = str(enhancement_id)
+    _load_enhancement_farm_id(enhancement_id_str, supabase)
 
     try:
         result = (

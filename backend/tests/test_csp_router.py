@@ -422,7 +422,9 @@ class TestFarmEnhancements:
         assert response.status_code == status
 
     def test_update_sends_only_set_fields(self, client_for):
-        supabase = FakeSupabase(rows={"csp_farm_enhancements": [_ENH_ROW]})
+        supabase = FakeSupabase(
+            rows={"farms": [{"id": _FARM_ID}], "csp_farm_enhancements": [_ENH_ROW]}
+        )
 
         response = client_for(supabase).patch(
             f"{_BASE}/farm-enhancements/{_ENH_ID}", json={"status": "committed"}
@@ -434,6 +436,42 @@ class TestFarmEnhancements:
         assert payload == {"status": "committed"}
         query = supabase.last_query("csp_farm_enhancements")
         assert ("eq", ("id", _ENH_ID)) in query.filters
+
+    def test_create_with_field_from_another_farm_returns_422(self, client_for):
+        # The fields lookup is scoped to (field_id, farm_id); no row means the
+        # field is not on this farm.
+        supabase = FakeSupabase(rows={"farms": [{"id": _FARM_ID}], "fields": []})
+
+        response = client_for(supabase).post(
+            f"{_BASE}/farm-enhancements",
+            json={
+                "farm_id": _FARM_ID,
+                "enhancement_code": "340",
+                "field_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+        )
+
+        assert response.status_code == 422
+        assert supabase.writes_for("csp_farm_enhancements", "insert") == []
+        query = supabase.last_query("fields")
+        assert ("eq", ("farm_id", _FARM_ID)) in query.filters
+
+    def test_update_to_field_from_another_farm_returns_422(self, client_for):
+        supabase = FakeSupabase(
+            rows={
+                "farms": [{"id": _FARM_ID}],
+                "csp_farm_enhancements": [_ENH_ROW],
+                "fields": [],
+            }
+        )
+
+        response = client_for(supabase).patch(
+            f"{_BASE}/farm-enhancements/{_ENH_ID}",
+            json={"field_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+        )
+
+        assert response.status_code == 422
+        assert supabase.writes_for("csp_farm_enhancements", "update") == []
 
     def test_update_with_no_fields_returns_422(self, client_for):
         response = client_for(FakeSupabase()).patch(
