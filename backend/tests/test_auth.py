@@ -18,6 +18,8 @@ from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from supabase_auth.errors import AuthApiError
 
+from app.config import settings
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -383,3 +385,28 @@ class TestGetSupabaseClient:
             get_supabase_client()
 
         assert captured_calls[0]["key"] == settings.supabase_anon_key
+
+
+@pytest.mark.asyncio
+async def test_authenticated_client_scopes_storage_to_the_user_jwt():
+    """Storage must carry the user's JWT, not the anon key.
+
+    supabase-py builds the Storage client lazily from options.headers, which
+    postgrest.auth() never touches. If only PostgREST is scoped, storage
+    requests go out as the anon role and every storage policy (granted TO
+    authenticated and keyed on auth.uid()) denies them, so document uploads
+    fail. This is a drift guard for that class of bug.
+    """
+    from app.auth.middleware import get_authenticated_client
+
+    token = "user-jwt-BBB"
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    client = await get_authenticated_client(user=MagicMock(), credentials=credentials)
+
+    def header(headers, name="Authorization"):
+        return {k.lower(): v for k, v in dict(headers).items()}.get(name.lower())
+
+    assert header(client.storage._client.headers) == f"Bearer {token}"
+    assert header(client.options.headers) == f"Bearer {token}"
+    # The project's anon key must still travel as the apikey header.
+    assert header(client.options.headers, "apikey") == settings.supabase_anon_key

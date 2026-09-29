@@ -9,9 +9,9 @@ All endpoints require a valid Supabase JWT (Bearer token). Row Level Security
 policies are enforced through the authenticated Supabase client, so users can
 only access data for farms they own.
 
-Every farm endpoint recomputes its result on each request; none serves a
-stored copy. GET /csp/eligibility and POST /csp/evaluate also upsert the
-assessment row in csp_eligibility_assessments as a side effect.
+GET /csp/score serves the cached score from the latest assessment when one
+exists, falling back to a full re-score otherwise. GET /csp/eligibility
+and POST /csp/evaluate always recompute and upsert the assessment row.
 
 Payment amounts, contract limits and their citations are defined only in
 ``app.services.program_rules`` and returned in each response's ``rules`` /
@@ -27,7 +27,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from postgrest.exceptions import APIError
 
-from app.auth.access import assert_farm_access
+from app.auth.access import PGRST_NO_ROWS, assert_farm_access
 from app.auth.middleware import get_authenticated_client, get_current_user
 from app.models.schemas import (
     CSPEligibilityResponse,
@@ -35,10 +35,17 @@ from app.models.schemas import (
     CSPEvaluateResponse,
     CSPPaymentEstimate,
     CSPScoreBreakdown,
+    FarmEnhancementCreate,
+    FarmEnhancementListResponse,
+    FarmEnhancementResponse,
+    FarmEnhancementUpdate,
     ProgramDeadlinesResponse,
 )
 from app.rate_limit import limiter
-from app.services.csp_eligibility import evaluate_csp_eligibility
+from app.services.csp_eligibility import (
+    evaluate_csp_eligibility,
+    fetch_latest_assessment,
+)
 from app.services.csp_payment import estimate_csp_payments, get_recommended_enhancements
 from app.services.csp_scoring import calculate_stewardship_score
 from app.services.program_deadlines import build_deadlines_response, today_central
@@ -132,6 +139,21 @@ async def get_csp_score(
     """
     farm_id_str = str(farm_id)
     assert_farm_access(farm_id_str, supabase)
+
+    # Serve the cached score from the latest assessment when available.
+    # The assessment's resource_concerns_met column holds the full score
+    # payload written by evaluate_csp_eligibility.  This avoids re-running
+    # the scoring engine on every GET /csp/score call.
+    try:
+        cached = fetch_latest_assessment(
+            supabase, farm_id_str, "resource_concerns_met"
+        )
+    except APIError:
+        cached = None
+
+    if cached and isinstance(cached.get("resource_concerns_met"), dict):
+        logger.debug("csp/score: serving cached score for farm=%s", farm_id_str)
+        return cached["resource_concerns_met"]
 
     try:
         return await calculate_stewardship_score(farm_id_str, supabase)
@@ -333,6 +355,129 @@ async def run_full_csp_evaluation(
         "payments": payment_result,
         "evaluated_at": eligibility_result["evaluated_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Farm enhancement selections (csp_farm_enhancements)
+# ---------------------------------------------------------------------------
+
+_ENHANCEMENTS_TABLE = "csp_farm_enhancements"
+_PG_UNIQUE_VIOLATION = "23505"
+_PG_FOREIGN_KEY_VIOLATION = "23503"
+
+
+@router.get("/farm-enhancements", response_model=FarmEnhancementListResponse)
+async def list_farm_enhancements(
+    farm_id: UUID,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """List all enhancement selections for a farm."""
+    farm_id_str = str(farm_id)
+    assert_farm_access(farm_id_str, supabase)
+
+    try:
+        result = (
+            supabase.table(_ENHANCEMENTS_TABLE)
+            .select("*")
+            .eq("farm_id", farm_id_str)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except APIError as exc:
+        logger.error("csp/farm-enhancements: list failed farm=%s: %s", farm_id_str, exc)
+        raise HTTPException(status_code=500, detail="Failed to load enhancements.") from exc
+
+    return {"farm_id": farm_id_str, "enhancements": result.data or []}
+
+
+@router.post("/farm-enhancements", response_model=FarmEnhancementResponse, status_code=201)
+async def create_farm_enhancement(
+    body: FarmEnhancementCreate,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """Save a new enhancement selection for a farm."""
+    assert_farm_access(body.farm_id, supabase)
+
+    payload = body.model_dump(mode="json", exclude_none=True)
+
+    try:
+        result = supabase.table(_ENHANCEMENTS_TABLE).insert(payload).execute()
+    except APIError as exc:
+        if exc.code == _PG_UNIQUE_VIOLATION:
+            raise HTTPException(
+                status_code=409, detail="This enhancement is already in your plan."
+            ) from exc
+        if exc.code == _PG_FOREIGN_KEY_VIOLATION:
+            raise HTTPException(
+                status_code=422, detail="Unknown enhancement code or field."
+            ) from exc
+        logger.error("csp/farm-enhancements: create failed farm=%s: %s", body.farm_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to save enhancement.") from exc
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to save enhancement.")
+    return result.data[0]
+
+
+@router.patch("/farm-enhancements/{enhancement_id}", response_model=FarmEnhancementResponse)
+async def update_farm_enhancement(
+    enhancement_id: UUID,
+    body: FarmEnhancementUpdate,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """Update an existing enhancement selection."""
+    enhancement_id_str = str(enhancement_id)
+    updates = body.model_dump(mode="json", exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    try:
+        result = (
+            supabase.table(_ENHANCEMENTS_TABLE)
+            .update(updates)
+            .eq("id", enhancement_id_str)
+            .execute()
+        )
+    except APIError as exc:
+        if exc.code == PGRST_NO_ROWS:
+            raise HTTPException(status_code=404, detail="Enhancement not found") from exc
+        logger.error(
+            "csp/farm-enhancements: update failed id=%s: %s", enhancement_id_str, exc
+        )
+        raise HTTPException(status_code=500, detail="Failed to update enhancement.") from exc
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Enhancement not found")
+    return result.data[0]
+
+
+@router.delete("/farm-enhancements/{enhancement_id}", status_code=204)
+async def delete_farm_enhancement(
+    enhancement_id: UUID,
+    user=Depends(get_current_user),
+    supabase=Depends(get_authenticated_client),
+):
+    """Delete an enhancement selection."""
+    enhancement_id_str = str(enhancement_id)
+
+    try:
+        result = (
+            supabase.table(_ENHANCEMENTS_TABLE)
+            .delete()
+            .eq("id", enhancement_id_str)
+            .execute()
+        )
+    except APIError as exc:
+        logger.error(
+            "csp/farm-enhancements: delete failed id=%s: %s", enhancement_id_str, exc
+        )
+        raise HTTPException(status_code=500, detail="Failed to delete enhancement.") from exc
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Enhancement not found")
 
 
 # ---------------------------------------------------------------------------

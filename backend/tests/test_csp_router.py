@@ -116,6 +116,8 @@ _ELIGIBILITY_KEYS = {
     "resource_concerns_detail", "cart_score", "state_ranking_threshold",
     "meets_ranking_threshold", "eligibility_notes", "recommended_enhancements",
     "is_estimate", "scoring_rules", "evaluated_at",
+    # Additive: reports a failed assessment write instead of a silent success.
+    "warnings",
 }
 _RULES_KEYS = {
     "program", "as_of", "source_title", "source_url", "contract_limit",
@@ -230,8 +232,9 @@ class TestScore:
         assert body["farm_id"] == _FARM_ID
         assert len(body["resource_concern_scores"]) == 8
         assert body["is_estimate"] is True
-        # Scoring is read-only.
-        assert "csp_eligibility_assessments" not in supabase.chains
+        # Scoring is read-only: may read the cached assessment but must not upsert.
+        if "csp_eligibility_assessments" in supabase.chains:
+            supabase.chains["csp_eligibility_assessments"].upsert.assert_not_called()
         _assert_no_uuid_args(supabase)
 
     def test_database_error_returns_500(self, client_for):
@@ -323,3 +326,173 @@ class TestEvaluate:
         payload = supabase.chains["csp_eligibility_assessments"].upsert.call_args.args[0]
         assert isinstance(payload["farm_id"], str)
         _assert_no_uuid_args(supabase)
+
+
+# ---------------------------------------------------------------------------
+# /csp/farm-enhancements (csp_farm_enhancements CRUD)
+# ---------------------------------------------------------------------------
+
+from tests.test_schema_drift import FakeSupabase, table_columns  # noqa: E402
+
+_ENH_ID = "0d9c8b7a-6f5e-4d3c-8b2a-1f0e9d8c7b6a"
+_ENH_ROW = {
+    "id": _ENH_ID,
+    "farm_id": _FARM_ID,
+    "enhancement_code": "340",
+    "field_id": None,
+    "status": "considering",
+    "acres_enrolled": None,
+    "estimated_payment": None,
+    "notes": None,
+    "created_at": "2026-09-29T10:00:00+00:00",
+    "updated_at": "2026-09-29T10:00:00+00:00",
+}
+
+
+def _pg_error(code: str) -> APIError:
+    return APIError({"message": "db", "code": code, "hint": None, "details": None})
+
+
+class TestFarmEnhancements:
+    def test_list_returns_farm_selections(self, client_for):
+        supabase = FakeSupabase(
+            rows={"farms": [{"id": _FARM_ID}], "csp_farm_enhancements": [_ENH_ROW]}
+        )
+
+        response = client_for(supabase).get(
+            f"{_BASE}/farm-enhancements", params={"farm_id": _FARM_ID}
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["farm_id"] == _FARM_ID
+        assert [e["id"] for e in body["enhancements"]] == [_ENH_ID]
+        query = supabase.last_query("csp_farm_enhancements")
+        assert ("eq", ("farm_id", _FARM_ID)) in query.filters
+
+    def test_list_missing_farm_returns_404(self, client_for):
+        response = client_for(FakeSupabase(rows={"farms": []})).get(
+            f"{_BASE}/farm-enhancements", params={"farm_id": _FARM_ID}
+        )
+
+        assert response.status_code == 404
+
+    def test_create_writes_only_real_columns(self, client_for):
+        supabase = FakeSupabase(rows={"farms": [{"id": _FARM_ID}]})
+
+        response = client_for(supabase).post(
+            f"{_BASE}/farm-enhancements",
+            json={"farm_id": _FARM_ID, "enhancement_code": "340"},
+        )
+
+        assert response.status_code == 201, response.text
+        (payload,) = supabase.writes_for("csp_farm_enhancements", "insert")
+        assert payload == {
+            "farm_id": _FARM_ID,
+            "enhancement_code": "340",
+            "status": "considering",
+        }
+        assert set(payload) <= table_columns("csp_farm_enhancements")
+
+    def test_create_for_hidden_farm_returns_404_without_writing(self, client_for):
+        supabase = FakeSupabase(rows={"farms": []})
+
+        response = client_for(supabase).post(
+            f"{_BASE}/farm-enhancements",
+            json={"farm_id": _FARM_ID, "enhancement_code": "340"},
+        )
+
+        assert response.status_code == 404
+        assert supabase.writes_for("csp_farm_enhancements", "insert") == []
+
+    @pytest.mark.parametrize(
+        ("pg_code", "status"), [("23505", 409), ("23503", 422), ("XX000", 500)]
+    )
+    def test_create_maps_database_errors(self, client_for, pg_code, status):
+        supabase = FakeSupabase(
+            rows={"farms": [{"id": _FARM_ID}]},
+            errors={("csp_farm_enhancements", "insert"): _pg_error(pg_code)},
+        )
+
+        response = client_for(supabase).post(
+            f"{_BASE}/farm-enhancements",
+            json={"farm_id": _FARM_ID, "enhancement_code": "340"},
+        )
+
+        assert response.status_code == status
+
+    def test_update_sends_only_set_fields(self, client_for):
+        supabase = FakeSupabase(rows={"csp_farm_enhancements": [_ENH_ROW]})
+
+        response = client_for(supabase).patch(
+            f"{_BASE}/farm-enhancements/{_ENH_ID}", json={"status": "committed"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "committed"
+        (payload,) = supabase.writes_for("csp_farm_enhancements", "update")
+        assert payload == {"status": "committed"}
+        query = supabase.last_query("csp_farm_enhancements")
+        assert ("eq", ("id", _ENH_ID)) in query.filters
+
+    def test_update_with_no_fields_returns_422(self, client_for):
+        response = client_for(FakeSupabase()).patch(
+            f"{_BASE}/farm-enhancements/{_ENH_ID}", json={}
+        )
+
+        assert response.status_code == 422
+
+    def test_update_invisible_row_returns_404(self, client_for):
+        # RLS hides the row, so PostgREST updates nothing and returns [].
+        chain = _chain([])
+        chain.update.return_value = chain
+        supabase = MagicMock()
+        supabase.table.return_value = chain
+
+        response = client_for(supabase).patch(
+            f"{_BASE}/farm-enhancements/{_ENH_ID}", json={"status": "committed"}
+        )
+
+        assert response.status_code == 404
+
+    def test_delete_returns_204(self, client_for):
+        chain = _chain([_ENH_ROW])
+        chain.delete.return_value = chain
+        supabase = MagicMock()
+        supabase.table.return_value = chain
+
+        response = client_for(supabase).delete(f"{_BASE}/farm-enhancements/{_ENH_ID}")
+
+        assert response.status_code == 204
+        chain.eq.assert_called_with("id", _ENH_ID)
+
+    def test_delete_invisible_row_returns_404(self, client_for):
+        response = client_for(FakeSupabase()).delete(
+            f"{_BASE}/farm-enhancements/{_ENH_ID}"
+        )
+
+        assert response.status_code == 404
+
+
+class TestScoreCache:
+    def test_serves_cached_score_without_rescoring(self, client_for):
+        # A real score payload, as evaluate_csp_eligibility would persist it.
+        fresh = client_for(_farm_supabase()).get(
+            f"{_BASE}/score", params={"farm_id": _FARM_ID}
+        )
+        assert fresh.status_code == 200, fresh.text
+        cached = {**fresh.json(), "total_points": 55.0}
+
+        tables = {
+            "farms": _FARM_ROW,
+            "csp_eligibility_assessments": [{"resource_concerns_met": cached}],
+        }
+        supabase = _supabase(tables)
+
+        response = client_for(supabase).get(f"{_BASE}/score", params={"farm_id": _FARM_ID})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["total_points"] == 55.0
+        # Scoring reads fields and soil; the cached path must not.
+        assert "fields" not in supabase.chains
+        supabase.chains["csp_eligibility_assessments"].upsert.assert_not_called()

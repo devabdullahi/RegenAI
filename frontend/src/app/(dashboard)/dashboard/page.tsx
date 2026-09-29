@@ -27,11 +27,11 @@ import {
 } from "@/lib/api/adapters";
 import { formatAcres, pluralize } from "@/lib/format";
 import type {
+  ActivityRecord,
   CreditEligibility,
   CSPEligibilityResponse,
   Farm,
   Field,
-  FieldActivity,
   Recommendation,
   SoilProfile,
   WeatherData,
@@ -157,7 +157,7 @@ export default async function DashboardPage({
 
   // Field-level data for the selected field, plus recent activity across all
   // fields. Every call tolerates failure so one bad widget can't break the page.
-  const [recommendations, weather, soil, cspPayments, activityLists, deadlinesResp] =
+  const [recommendations, weather, soil, cspPayments, activityRecords, deadlinesResp] =
     await Promise.all([
       api.recommendations
         .list(selectedField.id)
@@ -167,23 +167,20 @@ export default async function DashboardPage({
       cspResp
         ? api.csp.getPayments(farmId).catch(() => null)
         : Promise.resolve(null),
-      Promise.all(
-        farmFields.map((f) =>
-          api.activities
-            .list(f.id, { limit: RECENT_ACTIVITY_LIMIT })
-            .then((r) => r.activities.map((a) => activityToView(a, farmId, f.acres)))
-            .catch((): FieldActivity[] => [])
-        )
-      ),
+      api.activities
+        .listByFarm(farmId, { limit: RECENT_ACTIVITY_LIMIT })
+        .then((r) => r.activities)
+        .catch((): ActivityRecord[] => []),
       api.csp.getDeadlines(farm.state).catch(() => null),
     ]);
 
   const upcomingDeadlines = adaptDeadlines(deadlinesResp);
 
-  const recentActivities = activityLists
-    .flat()
-    .sort((a, b) => b.activity_date.localeCompare(a.activity_date))
-    .slice(0, RECENT_ACTIVITY_LIMIT);
+  // The backend returns the farm's activities newest first.
+  const acresByField = new Map(farmFields.map((f) => [f.id, f.acres]));
+  const recentActivities = activityRecords.map((a) =>
+    activityToView(a, farmId, acresByField.get(a.field_id))
+  );
 
   const cspEligibility = cspResp
     ? adaptEligibility(cspResp, { payments: cspPayments })

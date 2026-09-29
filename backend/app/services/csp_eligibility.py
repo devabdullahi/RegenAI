@@ -56,6 +56,11 @@ ASSESSMENTS_TABLE: str = "csp_eligibility_assessments"
 #: Conflict target for the upsert — must match UNIQUE(farm_id, fiscal_year).
 ASSESSMENT_CONFLICT_TARGET: str = "farm_id,fiscal_year"
 
+ASSESSMENT_NOT_SAVED_WARNING = (
+    "This assessment could not be saved, so it will be recalculated next time. "
+    "Your eligibility result below is still accurate."
+)
+
 #: Every eligibility_status value this service can write. The DB CHECK
 #: constraint (supabase/migrations/20260913000008_fix_write_paths.sql) must
 #: allow all of these; tests/test_schema_drift.py keeps them in sync.
@@ -259,13 +264,17 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
         "evaluated_at": now,
     }
 
+    # The computed assessment is still worth returning if the write fails, but
+    # the caller must be able to tell that nothing was saved: a silently lost
+    # upsert is how CSP assessments went unsaved before (CLAUDE.md 5).
+    warnings: list[str] = []
     try:
-        supabase.table(ASSESSMENTS_TABLE).upsert(
-            assessment_payload, on_conflict=ASSESSMENT_CONFLICT_TARGET
-        ).execute()
+        result = (
+            supabase.table(ASSESSMENTS_TABLE)
+            .upsert(assessment_payload, on_conflict=ASSESSMENT_CONFLICT_TARGET)
+            .execute()
+        )
     except APIError as exc:
-        # Non-fatal — the computed result is still returned, but log loudly so
-        # a schema/RLS mismatch is visible rather than silently dropping data.
         logger.error(
             "csp_eligibility: failed to persist assessment for farm=%s "
             "fiscal_year=%s status=%s: %s",
@@ -274,6 +283,18 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
             status,
             exc,
         )
+        warnings.append(ASSESSMENT_NOT_SAVED_WARNING)
+    else:
+        # A zero-row result means RLS filtered the write out; it is not success.
+        if not result.data:
+            logger.error(
+                "csp_eligibility: assessment upsert returned no row for farm=%s "
+                "fiscal_year=%s status=%s",
+                farm_id,
+                fiscal_year,
+                status,
+            )
+            warnings.append(ASSESSMENT_NOT_SAVED_WARNING)
 
     logger.info(
         "csp_eligibility: farm=%s status=%s cart=%.1f concerns_met=%d",
@@ -300,4 +321,5 @@ async def evaluate_csp_eligibility(farm_id: str, supabase) -> dict:
         "is_estimate": score_data["is_estimate"],
         "scoring_rules": score_data["scoring_rules"],
         "evaluated_at": now,
+        "warnings": warnings,
     }

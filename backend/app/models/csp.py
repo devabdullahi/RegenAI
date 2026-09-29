@@ -321,6 +321,10 @@ class CSPEligibilityResponse(BaseModel):
     )
     scoring_rules: CSPScoringRulesMetadata
     evaluated_at: datetime
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal problems, e.g. the assessment could not be saved.",
+    )
 
 
 class CSPEnhancementsResponse(BaseModel):
@@ -369,3 +373,59 @@ class CSPEvaluateResponse(BaseModel):
     score: CSPEvaluateScoreSummary
     payments: CSPEvaluatePaymentSummary
     evaluated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Farm enhancement selections (csp_farm_enhancements table)
+# ---------------------------------------------------------------------------
+
+
+class FarmEnhancementStatus(str, Enum):
+    considering = "considering"
+    committed = "committed"
+    active = "active"
+    removed = "removed"
+
+
+class FarmEnhancementCreate(BaseModel):
+    """Create a farm enhancement selection."""
+
+    farm_id: str
+    enhancement_code: str
+    field_id: str | None = None
+    status: FarmEnhancementStatus = FarmEnhancementStatus.considering
+    acres_enrolled: float | None = Field(None, ge=0)
+    estimated_payment: float | None = Field(None, ge=0)
+    notes: str | None = None
+
+
+class FarmEnhancementUpdate(BaseModel):
+    """Partial update for a farm enhancement selection."""
+
+    status: FarmEnhancementStatus | None = None
+    field_id: str | None = None
+    acres_enrolled: float | None = Field(None, ge=0)
+    estimated_payment: float | None = Field(None, ge=0)
+    notes: str | None = None
+
+
+class FarmEnhancementResponse(BaseModel):
+    """A persisted farm enhancement selection."""
+
+    id: str
+    farm_id: str
+    enhancement_code: str
+    field_id: str | None = None
+    status: FarmEnhancementStatus
+    acres_enrolled: float | None = None
+    estimated_payment: float | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FarmEnhancementListResponse(BaseModel):
+    """GET /csp/farm-enhancements: all selections for a farm."""
+
+    farm_id: str
+    enhancements: list[FarmEnhancementResponse]

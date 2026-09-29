@@ -234,12 +234,16 @@ export type DocumentType = "soil_report" | "field_photo" | "compliance";
 export interface Document {
   id: string;
   farm_id: string;
-  user_id: string;
+  /** Null on rows uploaded before these columns existed. */
+  user_id: string | null;
   doc_type: DocumentType;
-  file_name: string;
+  /** Null on rows uploaded before these columns existed. */
+  file_name: string | null;
   storage_path: string;
-  size_bytes: number;
+  /** Null on rows uploaded before these columns existed. */
+  size_bytes: number | null;
   description: string | null;
+  uploaded_at: string | null;
   created_at: string;
 }
 
@@ -651,6 +655,52 @@ export interface CSPEnhancement {
   status?: "considering" | "committed" | "active" | "removed";
   acres_enrolled?: number;
   estimated_payment?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Farm enhancement selections (csp_farm_enhancements)
+// ---------------------------------------------------------------------------
+
+export type FarmEnhancementStatus =
+  | "considering"
+  | "committed"
+  | "active"
+  | "removed";
+
+export interface FarmEnhancementRecord {
+  id: string;
+  farm_id: string;
+  enhancement_code: string;
+  field_id: string | null;
+  status: FarmEnhancementStatus;
+  acres_enrolled: number | null;
+  estimated_payment: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FarmEnhancementListResponse {
+  farm_id: string;
+  enhancements: FarmEnhancementRecord[];
+}
+
+export interface FarmEnhancementCreateInput {
+  farm_id: string;
+  enhancement_code: string;
+  field_id?: string;
+  status?: FarmEnhancementStatus;
+  acres_enrolled?: number;
+  estimated_payment?: number;
+  notes?: string;
+}
+
+export interface FarmEnhancementUpdateInput {
+  status?: FarmEnhancementStatus;
+  field_id?: string;
+  acres_enrolled?: number;
+  estimated_payment?: number;
+  notes?: string;
 }
 
 export interface CSPDeadline {

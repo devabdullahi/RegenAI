@@ -101,10 +101,14 @@ async def get_authenticated_client(
     client respect RLS policies scoped to the authenticated user.
     """
     client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    # Set the Authorization header directly on the PostgREST sub-client so
-    # that all database queries are scoped to this user's JWT and RLS policies
-    # are enforced correctly.  Calling set_session() with an empty refresh
-    # token can cause auth failures; this approach is safer and avoids
-    # mutating the shared auth state on the client object.
+    # Scope BOTH sub-clients to this user. postgrest.auth() only reaches the
+    # database client; supabase-py builds the Storage client lazily from
+    # options.headers, so without the line below Storage requests are sent as
+    # the anon role and every storage policy (granted TO authenticated, keyed
+    # on auth.uid()) denies them. Set the header before anything touches
+    # client.storage, because that attribute is constructed on first access.
+    # set_session() is avoided: with an empty refresh token it can fail auth
+    # and it mutates shared auth state on the client object.
+    client.options.headers["Authorization"] = f"Bearer {credentials.credentials}"
     client.postgrest.auth(credentials.credentials)
     return client

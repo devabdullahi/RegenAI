@@ -165,7 +165,10 @@ RegenAI/
 │       ├── 20260406000003_csp_navigator.sql          # CSP tables
 │       ├── 20260406000004_csp_seed_data.sql          # CSP reference data
 │       ├── 20260406000005_field_activity_log.sql     # Activity log + yield history tables
-│       └── 20260422000006_add_indexes.sql            # Indexes
+│       ├── 20260422000006_add_indexes.sql            # Indexes
+│       ├── 20260913000007_csp_fy2026_activities.sql  # FY2026 CSP activity list
+│       ├── 20260913000008_fix_write_paths.sql        # Missing columns, storage bucket, CSP statuses
+│       └── 20260920000009_rls_update_with_check.sql  # WITH CHECK on UPDATE policies
 │
 ├── docs/RegenAI_Explained.pdf       # Plain-language product overview
 ├── docker-compose.yml               # Runs the API service only
@@ -225,7 +228,7 @@ All endpoints except `/health` require a Supabase JWT passed as `Authorization: 
 
 ## Database Schema
 
-Six migrations define the schema. All tables have RLS enabled.
+Nine migrations define the schema. All tables have RLS enabled.
 
 **Core tables** (migration 001, INSERT policies in 002):
 `users`, `farms`, `fields`, `soil_profiles`, `weather_cache`, `recommendations`, `credit_eligibility`, `documents`, `eqip_practices`
