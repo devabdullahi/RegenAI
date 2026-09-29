@@ -344,3 +344,74 @@ class TestYieldHistory:
         client = make_client(FakeSupabase(rows={"fields": [_FIELD_ROW], "yield_history": rows}))
         response = client.get(f"{_BASE}/yield-history/aph", params={"field_id": _FIELD_ID})
         assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /activities?farm_id= (farm-wide list)
+# ---------------------------------------------------------------------------
+
+
+class TestListFarmActivities:
+    def test_lists_across_all_farm_fields_newest_first(self, make_client):
+        other_field = {**_FIELD_ROW, "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+        supabase = FakeSupabase(
+            rows={
+                "farms": [{"id": _FARM_ID}],
+                "fields": [_FIELD_ROW, other_field],
+                "field_activities": [_ACTIVITY_ROW],
+            }
+        )
+        client = make_client(supabase)
+
+        response = client.get(
+            f"{_BASE}/activities",
+            params={"farm_id": _FARM_ID, "limit": 10, "offset": 20},
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total_count"] == 1
+        assert body["activities"][0]["pest_disease_found"] == "corn rootworm"
+        fields_query = supabase.last_query("fields")
+        assert ("eq", ("farm_id", _FARM_ID)) in fields_query.filters
+        data_query = supabase.last_query("field_activities")
+        assert ("in_", ("field_id", [_FIELD_ID, other_field["id"]])) in data_query.filters
+        assert ("range", (20, 29)) in data_query.filters
+        assert any(
+            name == "order" and args == ("activity_date",)
+            for name, args in data_query.filters
+        )
+
+    def test_farm_without_fields_returns_empty(self, make_client):
+        supabase = FakeSupabase(rows={"farms": [{"id": _FARM_ID}], "fields": []})
+        client = make_client(supabase)
+
+        response = client.get(f"{_BASE}/activities", params={"farm_id": _FARM_ID})
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"activities": [], "total_count": 0}
+        assert "field_activities" not in supabase.tables_queried()
+
+    def test_missing_farm_returns_404(self, make_client):
+        client = make_client(FakeSupabase(rows={"farms": []}))
+
+        response = client.get(f"{_BASE}/activities", params={"farm_id": _FARM_ID})
+
+        assert response.status_code == 404
+
+    def test_neither_id_returns_422(self, make_client):
+        client = make_client(FakeSupabase())
+
+        response = client.get(f"{_BASE}/activities")
+
+        assert response.status_code == 422
+
+    def test_both_ids_returns_422(self, make_client):
+        client = make_client(FakeSupabase())
+
+        response = client.get(
+            f"{_BASE}/activities",
+            params={"field_id": _FIELD_ID, "farm_id": _FARM_ID},
+        )
+
+        assert response.status_code == 422

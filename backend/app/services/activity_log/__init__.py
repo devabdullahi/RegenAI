@@ -22,6 +22,7 @@ from app.services.activity_log.crud import (
     delete_activity,
     get_activity,
     list_activities,
+    list_farm_activities,
     update_activity,
 )
 from app.services.activity_log.summary import (
@@ -41,6 +42,7 @@ __all__ = [
     "get_activity",
     "get_activity_summary",
     "list_activities",
+    "list_farm_activities",
     "list_yield_history",
     "logger",
     "update_activity",

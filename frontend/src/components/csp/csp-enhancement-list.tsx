@@ -1,8 +1,9 @@
 import { Stamp } from "@/components/shared/record";
+import { CSPEnhancementSelect } from "@/components/csp/csp-enhancement-select";
 import { practiceStandardStamp } from "@/lib/csp-status";
 import { toneTextClasses } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
-import type { CSPEnhancement } from "@/lib/api/types";
+import type { CSPEnhancement, FarmEnhancementRecord } from "@/lib/api/types";
 
 /**
  * Conservation activities listed the way a practice schedule is printed: the
@@ -43,7 +44,15 @@ function StatusWord({ status }: { status: CSPEnhancement["status"] }) {
 
 // ── Single activity row ───────────────────────────────────────────────────────
 
-function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
+function EnhancementItem({
+  enhancement,
+  farmId,
+  selection,
+}: {
+  enhancement: CSPEnhancement;
+  farmId?: string;
+  selection: FarmEnhancementRecord | null;
+}) {
   return (
     <li className="space-y-2 border-b border-rule py-4 last:border-0">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
@@ -53,7 +62,7 @@ function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
             <span className="sr-only">
               NRCS practice standard {enhancement.practice_standard_code}
             </span>
-            <StatusWord status={enhancement.status} />
+            <StatusWord status={selection?.status ?? enhancement.status} />
           </div>
           <p className="mt-1.5 text-sm leading-snug font-semibold text-foreground">
             {enhancement.name}
@@ -103,6 +112,15 @@ function EnhancementItem({ enhancement }: { enhancement: CSPEnhancement }) {
             </span>
           )}
       </div>
+
+      {farmId && (
+        <CSPEnhancementSelect
+          farmId={farmId}
+          enhancementCode={enhancement.code}
+          enhancementName={enhancement.name}
+          selection={selection}
+        />
+      )}
     </li>
   );
 }
@@ -113,12 +131,18 @@ interface CSPEnhancementListProps {
   enhancements: CSPEnhancement[];
   title?: string;
   showEmpty?: boolean;
+  /** When set, each row gets controls to save it to the farm's plan. */
+  farmId?: string;
+  /** The farm's saved selections, keyed by enhancement code. */
+  selections?: Map<string, FarmEnhancementRecord>;
 }
 
 export function CSPEnhancementList({
   enhancements,
   title = "Recommended conservation activities",
   showEmpty = true,
+  farmId,
+  selections,
 }: CSPEnhancementListProps) {
   if (enhancements.length === 0 && !showEmpty) return null;
 
@@ -146,7 +170,12 @@ export function CSPEnhancementList({
       ) : (
         <ul className="mt-2" aria-label="Conservation activities">
           {enhancements.map((enh) => (
-            <EnhancementItem key={enh.id} enhancement={enh} />
+            <EnhancementItem
+              key={enh.id}
+              enhancement={enh}
+              farmId={farmId}
+              selection={selections?.get(enh.code) ?? null}
+            />
           ))}
         </ul>
       )}

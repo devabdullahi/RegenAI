@@ -36,6 +36,10 @@ import type {
   CSPScoreBreakdown,
   Document,
   DocumentListParams,
+  FarmEnhancementCreateInput,
+  FarmEnhancementListResponse,
+  FarmEnhancementRecord,
+  FarmEnhancementUpdateInput,
   Farm,
   FarmCreateInput,
   FarmUpdateInput,
@@ -347,13 +351,22 @@ export function createEndpoints(request: RequestFn) {
   };
 
   const activities = {
-    /** GET /activities?field_id=&activity_type=&start_date=&end_date=&limit=&offset= */
+    /** GET /activities?field_id=&farm_id=&activity_type=&start_date=&end_date=&limit=&offset= */
     list: (
       fieldId: string,
       params: ActivityListParams = {}
     ): Promise<ActivityListResponse> =>
       request<ActivityListResponse>(
         withQuery("/activities", { field_id: fieldId, ...params })
+      ),
+
+    /** GET /activities?farm_id=&activity_type=&start_date=&end_date=&limit=&offset= */
+    listByFarm: (
+      farmId: string,
+      params: ActivityListParams = {}
+    ): Promise<ActivityListResponse> =>
+      request<ActivityListResponse>(
+        withQuery("/activities", { farm_id: farmId, ...params })
       ),
 
     /** GET /activities/{id} */
@@ -439,6 +452,35 @@ export function createEndpoints(request: RequestFn) {
     /** GET /csp/deadlines[?state=XX] */
     getDeadlines: (state?: string): Promise<CSPDeadlinesResponse> =>
       request<CSPDeadlinesResponse>(withQuery("/csp/deadlines", { state })),
+
+    /** GET /csp/farm-enhancements?farm_id= */
+    listFarmEnhancements: (farmId: string): Promise<FarmEnhancementListResponse> =>
+      request<FarmEnhancementListResponse>(
+        withQuery("/csp/farm-enhancements", { farm_id: farmId })
+      ),
+
+    /** POST /csp/farm-enhancements */
+    createFarmEnhancement: (
+      data: FarmEnhancementCreateInput
+    ): Promise<FarmEnhancementRecord> =>
+      request<FarmEnhancementRecord>("/csp/farm-enhancements", {
+        method: "POST",
+        body: data,
+      }),
+
+    /** PATCH /csp/farm-enhancements/{id} */
+    updateFarmEnhancement: (
+      id: string,
+      data: FarmEnhancementUpdateInput
+    ): Promise<FarmEnhancementRecord> =>
+      request<FarmEnhancementRecord>(`/csp/farm-enhancements/${seg(id)}`, {
+        method: "PATCH",
+        body: data,
+      }),
+
+    /** DELETE /csp/farm-enhancements/{id} */
+    deleteFarmEnhancement: (id: string): Promise<void> =>
+      request<void>(`/csp/farm-enhancements/${seg(id)}`, { method: "DELETE" }),
   };
 
   const credits = {

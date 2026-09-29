@@ -34,6 +34,7 @@ import type {
   CSPRulesMetadata,
   CSPScore,
   CSPSuggestedActivity,
+  FarmEnhancementRecord,
   FieldActivity,
   ScoutingSeverity,
   VcmEstimate,
@@ -416,10 +417,27 @@ export function adaptEnhancement(e: CSPEnhancementActivity): CSPEnhancement {
     higher_payment_category: e.higher_payment_category,
     point_weight: e.priority_score,
     resource_concern_code: e.resource_concerns_addressed[0] ?? "",
-    status: "considering", // backend has no enhancement selection yet
+    // Selection status comes from GET /csp/farm-enhancements, not here.
     acres_enrolled: e.applicable_acres,
     estimated_payment: e.estimated_annual_payment,
   };
+}
+
+/**
+ * Index a farm's saved enhancement selections by code. A farm-wide row
+ * (no field_id) wins over field-level rows for the same code.
+ */
+export function selectionsByCode(
+  records: FarmEnhancementRecord[]
+): Map<string, FarmEnhancementRecord> {
+  const byCode = new Map<string, FarmEnhancementRecord>();
+  for (const r of records) {
+    const existing = byCode.get(r.enhancement_code);
+    if (!existing || (existing.field_id !== null && r.field_id === null)) {
+      byCode.set(r.enhancement_code, r);
+    }
+  }
+  return byCode;
 }
 
 // ── Activities ────────────────────────────────────────────────────────────────
