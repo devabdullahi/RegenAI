@@ -11,7 +11,11 @@ import { NRCS_DISCLAIMER, NRCS_SERVICE_CENTER_LOCATOR_URL } from "@/lib/csp-stat
 import { cn } from "@/lib/utils";
 
 import type { Metadata } from "next";
-import type { CSPChecklistItem, CSPEligibility } from "@/lib/api/types";
+import type {
+  CSPChecklistItem,
+  CSPEligibility,
+  FarmEnhancementRecord,
+} from "@/lib/api/types";
 
 export const metadata: Metadata = {
   title: "CSP Application Checklist — RegenAI",
@@ -25,10 +29,23 @@ interface ChecklistPageProps {
 
 function buildChecklist(
   eligibility: CSPEligibility,
-  farmHasFields: boolean
+  farmHasFields: boolean,
+  selections: FarmEnhancementRecord[]
 ): CSPChecklistItem[] {
-  const hasEnhancements = eligibility.active_enhancement_codes.length > 0;
-  const hasCommitment = eligibility.rc_count_will_meet > 0;
+  // Enhancements the farmer saved to their plan (csp_farm_enhancements),
+  // plus any the assessment already counts as active.
+  const selectedCodes = [
+    ...new Set([
+      ...selections
+        .filter((s) => s.status !== "removed")
+        .map((s) => s.enhancement_code),
+      ...eligibility.active_enhancement_codes,
+    ]),
+  ];
+  const hasEnhancements = selectedCodes.length > 0;
+  const hasCommitment =
+    selections.some((s) => s.status === "committed" || s.status === "active") ||
+    eligibility.rc_count_will_meet > 0;
   const rcMet = eligibility.meets_min_concerns;
   const minRequired = eligibility.min_concerns_required;
   const rcCount = eligibility.rc_count_above_threshold;
@@ -76,7 +93,7 @@ function buildChecklist(
       label: "Enhancement activities selected",
       completed: hasEnhancements,
       detail: hasEnhancements
-        ? `${eligibility.active_enhancement_codes.length} enhancement${eligibility.active_enhancement_codes.length !== 1 ? "s" : ""} selected: ${eligibility.active_enhancement_codes.join(", ")}`
+        ? `${selectedCodes.length} enhancement${selectedCodes.length !== 1 ? "s" : ""} selected: ${selectedCodes.join(", ")}`
         : "No enhancement activities chosen yet",
       action: hasEnhancements ? undefined : "Browse available enhancements",
     },
@@ -285,12 +302,14 @@ export default async function CspChecklistPage({
   let eligibility: CSPEligibility;
   let farmName: string;
   let hasFields: boolean;
+  let selections: FarmEnhancementRecord[];
 
   try {
-    const [eligibilityResp, farm, fields] = await Promise.all([
+    const [eligibilityResp, farm, fields, selectionsResp] = await Promise.all([
       api.csp.getEligibility(farmId),
       api.farms.get(farmId),
       api.fields.list(farmId),
+      api.csp.listFarmEnhancements(farmId).catch(() => null),
     ]);
     const deadlinesResp = await api.csp
       .getDeadlines(farm.state)
@@ -300,13 +319,14 @@ export default async function CspChecklistPage({
     });
     farmName = farm.name;
     hasFields = fields.length > 0;
+    selections = selectionsResp?.enhancements ?? [];
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "An unexpected error occurred.";
     return <ErrorState message={message} />;
   }
 
-  const checklist = buildChecklist(eligibility, hasFields);
+  const checklist = buildChecklist(eligibility, hasFields, selections);
 
   const programItems = checklist.filter((i) =>
     ["has_fields", "rc_threshold_min", "commitment_selected", "enhancements_selected"].includes(i.item_id)

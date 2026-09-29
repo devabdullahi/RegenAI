@@ -42,6 +42,7 @@ from app.services.activity_log import (
     get_activity,
     get_activity_summary,
     list_activities,
+    list_farm_activities,
     list_yield_history,
     update_activity,
 )
@@ -91,7 +92,8 @@ async def log_activity(
 
 @router.get("/activities", response_model=ActivityListResponse)
 async def list_field_activities(
-    field_id: UUID,
+    field_id: UUID | None = None,
+    farm_id: UUID | None = None,
     activity_type: ActivityType | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -100,10 +102,15 @@ async def list_field_activities(
     user=Depends(get_current_user),
     supabase=Depends(get_authenticated_client),
 ):
-    """List activities for a field with optional filters and pagination.
+    """List activities for a field or all fields on a farm.
+
+    Provide exactly one of ``field_id`` or ``farm_id``. When ``farm_id``
+    is given, activities across all of the farm's fields are returned in
+    reverse-chronological order.
 
     Args:
-        field_id: UUID of the field (required).
+        field_id: UUID of a single field (mutually exclusive with farm_id).
+        farm_id: UUID of a farm — returns activities across all its fields.
         activity_type: Optional filter by activity type.
         start_date: Optional inclusive lower bound on activity_date.
         end_date: Optional inclusive upper bound on activity_date.
@@ -114,13 +121,32 @@ async def list_field_activities(
         ActivityListResponse with activities list and total_count.
 
     Raises:
-        HTTPException 404: Field not found.
-        HTTPException 422: start_date is after end_date.
+        HTTPException 404: Field or farm not found.
+        HTTPException 422: Neither or both IDs provided, or start_date > end_date.
         HTTPException 500: Database error.
     """
+    if not field_id and not farm_id:
+        raise HTTPException(
+            status_code=422, detail="Provide either field_id or farm_id."
+        )
+    if field_id and farm_id:
+        raise HTTPException(
+            status_code=422, detail="Provide field_id or farm_id, not both."
+        )
     if start_date and end_date and start_date > end_date:
         raise HTTPException(
             status_code=422, detail="start_date cannot be after end_date."
+        )
+
+    if farm_id:
+        return await list_farm_activities(
+            farm_id=str(farm_id),
+            supabase=supabase,
+            activity_type=activity_type.value if activity_type else None,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
         )
 
     return await list_activities(

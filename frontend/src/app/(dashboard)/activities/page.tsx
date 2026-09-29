@@ -23,10 +23,33 @@ import {
 } from "@/lib/activity-types";
 import { pluralize } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { FieldActivity, Field, ActivityType } from "@/lib/api/types";
+import type {
+  ActivityRecord,
+  FieldActivity,
+  Field,
+  ActivityType,
+} from "@/lib/api/types";
 
-/** Max rows per field (backend limit is 200). */
-const ACTIVITIES_PER_FIELD = 200;
+/** Rows per request (backend limit is 200). */
+const ACTIVITIES_PAGE_SIZE = 200;
+
+/** Fetch every activity on a farm, newest first, a page at a time. */
+async function listAllFarmActivities(farmId: string): Promise<ActivityRecord[]> {
+  const all: ActivityRecord[] = [];
+  for (;;) {
+    const page = await api.activities.listByFarm(farmId, {
+      limit: ACTIVITIES_PAGE_SIZE,
+      offset: all.length,
+    });
+    all.push(...page.activities);
+    if (
+      page.activities.length < ACTIVITIES_PAGE_SIZE ||
+      all.length >= page.total_count
+    ) {
+      return all;
+    }
+  }
+}
 
 const EMPTY_FILTERS: ActivityFiltersState = {
   fieldId: null,
@@ -95,27 +118,19 @@ export default function ActivitiesPage() {
       const currentFarmId: string = farmId;
 
       try {
-        // The backend lists activities per field (GET /activities?field_id=),
-        // so fetch the farm's fields first and then each field's activities.
-        const farmFields = await api.fields.list(currentFarmId);
-        const perField = await Promise.all(
-          farmFields.map((f) =>
-            api.activities
-              .list(f.id, { limit: ACTIVITIES_PER_FIELD })
-              .then((r) =>
-                r.activities.map((a) => activityToView(a, currentFarmId, f.acres))
-              )
-          )
-        );
+        const [farmFields, records] = await Promise.all([
+          api.fields.list(currentFarmId),
+          listAllFarmActivities(currentFarmId),
+        ]);
+        const acresByField = new Map(farmFields.map((f) => [f.id, f.acres]));
 
         if (!cancelled) {
-          // Sort newest first
-          const sorted = perField.flat().sort(
-            (a, b) =>
-              new Date(b.activity_date).getTime() -
-              new Date(a.activity_date).getTime()
+          // The backend returns newest first.
+          setActivities(
+            records.map((a) =>
+              activityToView(a, currentFarmId, acresByField.get(a.field_id))
+            )
           );
-          setActivities(sorted);
           setFields(farmFields);
         }
       } catch (err) {

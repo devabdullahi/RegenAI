@@ -152,6 +152,75 @@ async def list_activities(
     }
 
 
+async def list_farm_activities(
+    farm_id: str,
+    supabase,
+    *,
+    activity_type: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Fetch paginated activities across all fields on a farm.
+
+    Returns:
+        Dict with keys ``activities`` (list) and ``total_count`` (int).
+
+    Raises:
+        HTTPException 404: Farm not found.
+        HTTPException 500: Query failure.
+    """
+    from app.auth.access import assert_farm_access
+
+    assert_farm_access(farm_id, supabase)
+
+    try:
+        fields_result = (
+            supabase.table("fields").select("id").eq("farm_id", farm_id).execute()
+        )
+    except APIError as exc:
+        logger.error(
+            "activity_log.list_farm_activities: fields query failed farm=%s error=%s",
+            farm_id, exc, exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Failed to retrieve farm fields.")
+
+    field_ids = [f["id"] for f in (fields_result.data or [])]
+    if not field_ids:
+        return {"activities": [], "total_count": 0}
+
+    filters = {"activity_type": activity_type, "start_date": start_date, "end_date": end_date}
+
+    try:
+        count_result = _apply_filters(
+            supabase.table("field_activities").select("id", count="exact"),
+            field_ids=field_ids, **filters,
+        ).execute()
+        data_result = (
+            _apply_filters(
+                supabase.table("field_activities").select("*"),
+                field_ids=field_ids, **filters,
+            )
+            .order("activity_date", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+    except APIError as exc:
+        logger.error(
+            "activity_log.list_farm_activities: query failed farm=%s error=%s",
+            farm_id, exc, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve activities. Please try again."
+        )
+
+    return {
+        "activities": [_from_columns(row) for row in data_result.data or []],
+        "total_count": count_result.count or 0,
+    }
+
+
 async def get_activity(activity_id: str, supabase) -> dict:
     """Fetch a single activity by ID (API field names).
 

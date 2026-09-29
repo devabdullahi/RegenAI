@@ -657,6 +657,52 @@ export interface CSPEnhancement {
   estimated_payment?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Farm enhancement selections (csp_farm_enhancements)
+// ---------------------------------------------------------------------------
+
+export type FarmEnhancementStatus =
+  | "considering"
+  | "committed"
+  | "active"
+  | "removed";
+
+export interface FarmEnhancementRecord {
+  id: string;
+  farm_id: string;
+  enhancement_code: string;
+  field_id: string | null;
+  status: FarmEnhancementStatus;
+  acres_enrolled: number | null;
+  estimated_payment: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FarmEnhancementListResponse {
+  farm_id: string;
+  enhancements: FarmEnhancementRecord[];
+}
+
+export interface FarmEnhancementCreateInput {
+  farm_id: string;
+  enhancement_code: string;
+  field_id?: string;
+  status?: FarmEnhancementStatus;
+  acres_enrolled?: number;
+  estimated_payment?: number;
+  notes?: string;
+}
+
+export interface FarmEnhancementUpdateInput {
+  status?: FarmEnhancementStatus;
+  field_id?: string;
+  acres_enrolled?: number;
+  estimated_payment?: number;
+  notes?: string;
+}
+
 export interface CSPDeadline {
   deadline_id: string;
   state_code: string; // two-letter code or "ALL"

@@ -135,14 +135,22 @@ def _check_rules(
 
 def _apply_filters(
     query,
-    field_id: str,
+    field_id: str | None = None,
     *,
+    field_ids: list[str] | None = None,
     activity_type: str | None,
     start_date: date | None,
     end_date: date | None,
 ):
-    """Apply the shared field/type/date filters to a field_activities query."""
-    query = query.eq("field_id", field_id)
+    """Apply the shared field/type/date filters to a field_activities query.
+
+    Exactly one of ``field_id`` (single field) or ``field_ids`` (multiple,
+    e.g. all fields on a farm) must be provided.
+    """
+    if field_ids is not None:
+        query = query.in_("field_id", field_ids)
+    elif field_id is not None:
+        query = query.eq("field_id", field_id)
     if activity_type:
         query = query.eq("activity_type", activity_type)
     if start_date:

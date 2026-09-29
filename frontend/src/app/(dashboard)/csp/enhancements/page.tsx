@@ -12,6 +12,7 @@ import {
   adaptDeadlines,
   adaptEnhancement,
   ruleCitation,
+  selectionsByCode,
   ruleNotes,
 } from "@/lib/api/adapters";
 import type {
@@ -19,6 +20,7 @@ import type {
   CSPEnhancement,
   CSPRuleCitation,
   CSPRuleNotes,
+  FarmEnhancementRecord,
 } from "@/lib/api/types";
 
 import { formatUsd, pluralize } from "@/lib/format";
@@ -71,6 +73,7 @@ export default async function CspEnhancementsPage({
   let deadlines: CSPDeadline[];
   let rules: CSPRuleCitation | null;
   let notes: CSPRuleNotes | null;
+  let selections: Map<string, FarmEnhancementRecord> | undefined;
 
   try {
     // Eligibility first: it persists the assessment that
@@ -79,9 +82,11 @@ export default async function CspEnhancementsPage({
       api.farms.get(farmId),
       api.csp.getEligibility(farmId),
     ]);
-    const [enhancementsResp, deadlinesResp] = await Promise.all([
+    const [enhancementsResp, deadlinesResp, selectionsResp] = await Promise.all([
       api.csp.getEnhancements(farmId),
       api.csp.getDeadlines(farm.state).catch(() => null),
+      // Without saved selections the list still renders, just without controls.
+      api.csp.listFarmEnhancements(farmId).catch(() => null),
     ]);
 
     farmName = farm.name;
@@ -90,6 +95,9 @@ export default async function CspEnhancementsPage({
     deadlines = adaptDeadlines(deadlinesResp);
     rules = enhancementsResp.rules ? ruleCitation(enhancementsResp.rules) : null;
     notes = enhancementsResp.rules ? ruleNotes(enhancementsResp.rules) : null;
+    selections = selectionsResp
+      ? selectionsByCode(selectionsResp.enhancements)
+      : undefined;
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to load enhancements data.";
@@ -173,6 +181,8 @@ export default async function CspEnhancementsPage({
           enhancements={gapClosingEnhancements}
           title="Recommended to close your stewardship gaps"
           showEmpty={false}
+          farmId={selections ? farmId : undefined}
+          selections={selections}
         />
       )}
 
@@ -182,6 +192,8 @@ export default async function CspEnhancementsPage({
           enhancements={otherEnhancements}
           title="More activities to consider"
           showEmpty={false}
+          farmId={selections ? farmId : undefined}
+          selections={selections}
         />
       )}
 

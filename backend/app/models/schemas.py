@@ -45,6 +45,11 @@ from app.models.csp import (
     CSPScoreBreakdown,
     CSPScoringRulesMetadata,
     CSPStateRankingThresholdCitation,
+    FarmEnhancementCreate,
+    FarmEnhancementListResponse,
+    FarmEnhancementResponse,
+    FarmEnhancementStatus,
+    FarmEnhancementUpdate,
 )
 from app.models.document import (
     DocumentResponse,
@@ -128,6 +133,11 @@ __all__ = [
     "DocumentResponse",
     "DocumentType",
     "EvaluatedProgramResult",
+    "FarmEnhancementCreate",
+    "FarmEnhancementListResponse",
+    "FarmEnhancementResponse",
+    "FarmEnhancementStatus",
+    "FarmEnhancementUpdate",
     "FarmCreate",
     "FarmResponse",
     "FarmUpdate",
