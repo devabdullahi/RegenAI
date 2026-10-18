@@ -37,7 +37,7 @@ jobs:
         run: pipx install poetry==2.3.3
 
       - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pypoetry
           key: poetry-${{ runner.os }}-py3.11-${{ hashFiles('backend/poetry.lock', 'backend/pyproject.toml') }}
